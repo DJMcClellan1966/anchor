@@ -1,0 +1,84 @@
+# Anchor
+
+Anchor uses the **dictionary as a symbolic anchor** so an LM stays honest about what it talks about; responses can be any genre (definitional, narrative, etc.) via style retrieval and optional LM.
+
+## What it does
+
+- **Concept bundle** from the dictionary (BasisEngine) for a query.
+- **Style sentences** from genre corpus (optional) filtered by concept.
+- **Generate** via stub (terms + definitions), optionally scratchLLM/Align, or **corpus** (Option C: graph-based next-sentence).
+- **Critic** scores the response against the graph (accept/warn/reject).
+
+## Option C: Combined corpus with genre tags
+
+You can build a single sentence corpus, vocabulary, and word/sentence graph for retrieval and next-sentence prediction (all local, CPU-friendly):
+
+1. **Build corpus** — Put source text in a directory (e.g. `.txt` or `.jsonl`), then:
+   ```bash
+   python scripts/build_corpus.py path/to/sources -o data
+   ```
+   Writes `data/corpus/sentences.jsonl` (and optionally `data/<genre_id>/genre_sentences.jsonl`).
+
+2. **Build vocabulary and encode** — Run after the corpus step:
+   ```bash
+   python scripts/build_vocab.py data
+   ```
+   Writes `data/corpus/vocab.json` and `data/corpus/encoded_sentences.jsonl`.
+
+3. **Build graph** — Run after the vocab step:
+   ```bash
+   python scripts/build_graph.py data
+   ```
+   Writes `data/corpus/graph.json`.
+
+4. **Use in Anchor** — Set `align_data_dir` in config/paths.json to `data` (or the directory containing `corpus/`). Option C is **on by default** when the graph exists; set `"use_corpus_graph": false` in config/anchor.json to turn it off.
+
+## Prerequisites
+
+- Python 3.10+
+- [Dictionary](https://github.com/DJMcClellan1966/dictionary) repo (for BasisEngine and concept graph)
+- Optional: scratchLLM or Align for richer generation
+
+## Setup
+
+1. Clone or place the **dictionary** repo (e.g. `Desktop/dictionary`).
+2. Edit **config/paths.json**: set `dictionary_path` to the dictionary repo root (e.g. `.../dictionary/dictionary`). Copy from **config/paths.json.example** if needed.
+3. Optional: set `scratchllm_path` or `align_data_dir` to use scratchLLM or Align for generation.
+
+## Run
+
+From the anchor folder:
+
+```bash
+python run_anchor.py "What is a function?"
+```
+
+Or start a REPL:
+
+```bash
+python run_anchor.py --repl
+```
+
+If `dictionary_path` is not set, Anchor prints a message and exits. Set it in **config/paths.json** or via **ANCHOR_DICTIONARY_PATH**.
+
+## Config
+
+- **config/paths.json** – `dictionary_path`, `scratchllm_path`, `align_data_dir`
+- **config/anchor.json** – `critic_accept_threshold`, `critic_low_warn_threshold`, `default_genre_id`, `register`, `use_corpus_graph`, `next_sentence_mode`, `corpus_next_sentences_top_k`
+
+Env overrides: `ANCHOR_DICTIONARY_PATH`, `ANCHOR_DATA_DIR`.
+
+## Project layout
+
+- **anchor/engine.py** – AnchorEngine: concept -> style -> generate -> critic
+- **anchor/critic.py** – Dictionary score and accept/warn/reject
+- **anchor/retrieval.py** – Concept bundle, style sentences, and graph-based retrieval (Option C)
+- **anchor/generator.py** – Stub, optional scratchLLM/Align, or corpus (next-sentence)
+- **anchor/corpus_vocab.py** – Vocabulary build and sentence encoding (Option C)
+- **anchor/corpus_graph.py** – Word/sentence graph build and load (Option C)
+- **anchor/next_sentence.py** – Next-sentence retrieval from graph (Option C)
+- **anchor/wire.py** – Load config and dictionary (single place that touches external repos)
+- **run_anchor.py** – CLI entry point
+- **scripts/build_corpus.py** – Build combined corpus with genre tags
+- **scripts/build_vocab.py** – Build vocab and encoded_sentences from corpus
+- **scripts/build_graph.py** – Build corpus graph from encoded sentences

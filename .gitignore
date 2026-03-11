@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.pyc
+
+# Optional: machine-specific paths (keep example)
+# config/paths.json
+
+# Data/cache if anchor writes any
+data/
+*.log
+.env
