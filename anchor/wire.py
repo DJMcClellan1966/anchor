@@ -47,8 +47,10 @@ def get_config() -> dict[str, Any]:
 
 
 def get_engine() -> Any | None:
-    """Build BasisEngine from dictionary_path. Returns None if path missing or import fails."""
+    """Build BasisEngine from dictionary_path. Returns None if path missing, import fails, or use_dictionary is false."""
     cfg = get_config()
+    if not cfg.get("use_dictionary", True):
+        return None
     dict_path = cfg.get("dictionary_path")
     if not dict_path:
         return None

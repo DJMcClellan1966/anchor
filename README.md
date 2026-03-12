@@ -19,6 +19,13 @@ You can build a single sentence corpus, vocabulary, and word/sentence graph for 
    ```
    Writes `data/corpus/sentences.jsonl` (and optionally `data/<genre_id>/genre_sentences.jsonl`).
 
+   **From Hugging Face:** Install optional deps: `pip install -r requirements-corpus.txt` (or `pip install datasets`). Then build from C4, Common Corpus, or similar (use `--streaming` for large sets like C4):
+   ```bash
+   python scripts/build_corpus_from_hf.py --dataset allenai/c4 --config en -o data --streaming --max-sentences 100000
+   python scripts/build_corpus_from_hf.py --dataset PleIAs/common_corpus -o data --max-sentences 50000
+   ```
+   If the dataset uses a different text column, add `--text-field <name>`. Then run the vocab and graph steps below.
+
 2. **Build vocabulary and encode** — Run after the corpus step:
    ```bash
    python scripts/build_vocab.py data
@@ -32,6 +39,24 @@ You can build a single sentence corpus, vocabulary, and word/sentence graph for 
    Writes `data/corpus/graph.json`.
 
 4. **Use in Anchor** — Set `align_data_dir` in config/paths.json to `data` (or the directory containing `corpus/`). Option C is **on by default** when the graph exists; set `"use_corpus_graph": false` in config/anchor.json to turn it off.
+
+## Tests
+
+Install test deps: `pip install -r requirements-test.txt`
+
+Run tests (excludes slow real-engine test by default):
+
+```bash
+pytest tests/ -m "not real_engine"
+```
+
+Run including the real dictionary engine (when `dictionary_path` is set):
+
+```bash
+pytest tests/ -m real_engine
+```
+
+Tests cover errors, completeness, robustness, and breakage (invalid input, missing files, malformed JSON). Integration tests run the full corpus pipeline and engine with a mock.
 
 ## Prerequisites
 
@@ -61,10 +86,21 @@ python run_anchor.py --repl
 
 If `dictionary_path` is not set, Anchor prints a message and exits. Set it in **config/paths.json** or via **ANCHOR_DICTIONARY_PATH**.
 
+## Features (all on by default)
+
+When the required paths/data exist, these are used automatically. Set to `false` in **config/anchor.json** to turn off:
+
+| Config key | Default | When used |
+|------------|---------|-----------|
+| `use_dictionary` | `true` | Dictionary at `dictionary_path` for concept bundle and critic |
+| `use_corpus_graph` | `true` | Graph at `align_data_dir/corpus/graph.json` for style retrieval and corpus generator |
+| `use_style_sentences` | `true` | Style sentences from corpus or per-genre files |
+| `use_critic` | `true` | Dictionary-based grounding score and accept/warn/reject |
+
 ## Config
 
 - **config/paths.json** – `dictionary_path`, `scratchllm_path`, `align_data_dir`
-- **config/anchor.json** – `critic_accept_threshold`, `critic_low_warn_threshold`, `default_genre_id`, `register`, `use_corpus_graph`, `next_sentence_mode`, `corpus_next_sentences_top_k`
+- **config/anchor.json** – `use_dictionary`, `use_corpus_graph`, `use_style_sentences`, `use_critic`, `critic_accept_threshold`, `critic_low_warn_threshold`, `default_genre_id`, `register`, `next_sentence_mode`, `corpus_next_sentences_top_k`
 
 Env overrides: `ANCHOR_DICTIONARY_PATH`, `ANCHOR_DATA_DIR`.
 
@@ -79,6 +115,7 @@ Env overrides: `ANCHOR_DICTIONARY_PATH`, `ANCHOR_DATA_DIR`.
 - **anchor/next_sentence.py** – Next-sentence retrieval from graph (Option C)
 - **anchor/wire.py** – Load config and dictionary (single place that touches external repos)
 - **run_anchor.py** – CLI entry point
-- **scripts/build_corpus.py** – Build combined corpus with genre tags
+- **scripts/build_corpus.py** – Build combined corpus with genre tags (from local files)
+- **scripts/build_corpus_from_hf.py** – Build corpus from Hugging Face datasets (OpenSubtitles, C4, etc.; requires `datasets`)
 - **scripts/build_vocab.py** – Build vocab and encoded_sentences from corpus
 - **scripts/build_graph.py** – Build corpus graph from encoded sentences
