@@ -6,7 +6,7 @@ Anchor uses the **dictionary as a symbolic anchor** so an LM stays honest about 
 
 - **Concept bundle** from the dictionary (BasisEngine) for a query.
 - **Style sentences** from genre corpus (optional) filtered by concept.
-- **Generate** via stub (terms + definitions), optionally scratchLLM/Align, or **corpus** (Option C: graph-based next-sentence or hybrid next-token when the graph has an inverted index).
+- **Generate** via stub (terms + definitions), optionally scratchLLM/Align, **corpus** (Option C: graph-based next-sentence or hybrid next-token), or **graph attention** (query lights up the graph, attention loops, pattern-based refinement; grounded, non-hallucinatory).
 - **Critic** scores the response against the graph (accept/warn/reject).
 
 ## Option C: Combined corpus with genre tags
@@ -94,13 +94,14 @@ When the required paths/data exist, these are used automatically. Set to `false`
 |------------|---------|-----------|
 | `use_dictionary` | `true` | Dictionary at `dictionary_path` for concept bundle and critic |
 | `use_corpus_graph` | `true` | Graph at `align_data_dir/corpus/graph.json` for style retrieval and corpus generator |
+| `use_attention_loop` | `true` | When true (and graph exists), use graph-attention generator: query activates nodes, attention traverses loops, repeating pattern refines the answer (grounded, non-hallucinatory). Set to `false` to use corpus (hybrid next-token) instead. |
 | `use_style_sentences` | `true` | Style sentences from corpus or per-genre files |
 | `use_critic` | `true` | Dictionary-based grounding score and accept/warn/reject |
 
 ## Config
 
 - **config/paths.json** – `dictionary_path`, `scratchllm_path`, `align_data_dir`
-- **config/anchor.json** – `use_dictionary`, `use_corpus_graph`, `use_style_sentences`, `use_critic`, `critic_accept_threshold`, `critic_low_warn_threshold`, `default_genre_id`, `register`, `next_sentence_mode`, `corpus_next_sentences_top_k`, `corpus_hybrid_context_length`, `corpus_hybrid_beta`, `corpus_max_tokens`
+- **config/anchor.json** – `use_dictionary`, `use_corpus_graph`, `use_attention_loop`, `attention_loop_hops`, `attention_loop_top_k`, `use_style_sentences`, `use_critic`, `critic_accept_threshold`, `critic_low_warn_threshold`, `default_genre_id`, `register`, `next_sentence_mode`, `corpus_next_sentences_top_k`, `corpus_hybrid_context_length`, `corpus_hybrid_beta`, `corpus_max_tokens`
 
 Env overrides: `ANCHOR_DICTIONARY_PATH`, `ANCHOR_DATA_DIR`.
 
@@ -114,6 +115,7 @@ Env overrides: `ANCHOR_DICTIONARY_PATH`, `ANCHOR_DATA_DIR`.
 - **anchor/corpus_graph.py** – Word/sentence graph build and load; by-product transition matrix (Option C)
 - **anchor/next_sentence.py** – Next-sentence retrieval from graph (Option C)
 - **anchor/next_token.py** – Retrieval + bigram hybrid next-token distribution and sampling
+- **anchor/graph_attention.py** – Graph attention loop: activate from query, traverse with attention, detect pattern, refine answer (grounded)
 - **anchor/corpus_model.py** – Load and sample from by-product corpus model (1-layer LM)
 - **anchor/wire.py** – Load config and dictionary (single place that touches external repos)
 - **run_anchor.py** – CLI entry point

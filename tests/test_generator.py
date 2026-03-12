@@ -102,3 +102,11 @@ class TestGenerateCorpusFallback:
         )
         assert out
         assert "Hello" in out
+
+    def test_graph_attention_missing_data_falls_back_to_stub(self):
+        config = {"align_data_dir": None}
+        out = generate(
+            "q", {"terms": ["x"], "definitions": {"x": "Def of x."}},
+            [], config, generator_kind="graph_attention"
+        )
+        assert "x" in out or "Def" in out

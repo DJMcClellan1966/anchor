@@ -15,8 +15,10 @@ def generate(
 ) -> str:
     """
     Produce response text. Stub uses terms and definitions; scratchLLM/Align use LM;
-    corpus uses graph-based next-sentence (Option C).
+    corpus uses graph-based next-sentence (Option C); graph_attention uses attention loop.
     """
+    if generator_kind == "graph_attention":
+        return _generate_graph_attention(question, concept_bundle, style_sentences, config)
     if generator_kind == "corpus":
         return _generate_corpus(question, concept_bundle, style_sentences, config)
     if generator_kind == "scratchllm":
@@ -24,6 +26,29 @@ def generate(
     if generator_kind == "align":
         return _generate_align(question, concept_bundle, style_sentences, config)
     return _generate_stub(question, concept_bundle, style_sentences, config)
+
+
+def _generate_graph_attention(
+    question: str,
+    concept_bundle: dict[str, Any],
+    style_sentences: list[str],
+    config: dict[str, Any],
+) -> str:
+    """Generate using graph attention loop; fall back to stub if data missing or run returns None."""
+    from pathlib import Path
+
+    from . import graph_attention
+
+    data_dir = config.get("align_data_dir") or config.get("ANCHOR_DATA_DIR")
+    if not data_dir:
+        return _generate_stub(question, concept_bundle, style_sentences, config)
+    data_path = Path(data_dir)
+    if not (data_path / "corpus" / "graph.json").exists() or not (data_path / "corpus" / "vocab.json").exists():
+        return _generate_stub(question, concept_bundle, style_sentences, config)
+    out = graph_attention.run(question, None, config, data_path)
+    if out is None or not (out or "").strip():
+        return _generate_stub(question, concept_bundle, style_sentences, config)
+    return out.strip()
 
 
 def _generate_corpus(
