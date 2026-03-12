@@ -104,3 +104,26 @@ class TestGetStyleSentencesFromGraph:
             tmp_path, {"terms": ["Hello"]}, "general"
         )
         assert any("Hello" in s for s in out)
+
+    def test_multi_genre_returns_sentences_from_both(self, tmp_path):
+        """When genre_id is a list, sentences from any listed genre are returned."""
+        (tmp_path / "corpus").mkdir(exist_ok=True)
+        with open(tmp_path / "corpus" / "vocab.json", "w", encoding="utf-8") as f:
+            json.dump({"word_to_id": {"term": 1}, "id_to_word": {"1": "term"}}, f)
+        with open(tmp_path / "corpus" / "graph.json", "w", encoding="utf-8") as f:
+            json.dump({
+                "sentence_words": {"0": [1], "1": [1]},
+                "word_cooccurrence": {"1": []},
+                "word_next": {"1": {}},
+                "sentence_similar": {"0": [], "1": []},
+            }, f)
+        with open(tmp_path / "corpus" / "encoded_sentences.jsonl", "w", encoding="utf-8") as f:
+            f.write(json.dumps({"sentence_id": 0, "genre_id": "retirement", "token_ids": [1], "text": "Term in retirement."}) + "\n")
+            f.write(json.dumps({"sentence_id": 1, "genre_id": "encyclopedia", "token_ids": [1], "text": "Term in encyclopedia."}) + "\n")
+        out = retrieval.get_style_sentences_from_graph(
+            tmp_path, {"terms": ["term"]}, genre_id=["retirement", "encyclopedia"]
+        )
+        assert len(out) >= 2
+        texts = {s for s in out}
+        assert any("retirement" in s for s in texts)
+        assert any("encyclopedia" in s for s in texts)

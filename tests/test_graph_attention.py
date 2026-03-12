@@ -41,6 +41,57 @@ class TestActivate:
         assert w_ids == set()
         assert s_ids == {0, 1}
 
+    def test_activate_with_query_token_ids_includes_ids_and_sentences(self):
+        """With query_token_ids, activated sets include those word IDs and their sentences."""
+        concept_bundle = {"terms": [], "definitions": {}}
+        word_to_id = {"a": 1, "b": 2, "c": 3}
+        data = {
+            "sentence_words": {"0": [1, 2], "1": [2, 3], "2": [3]},
+            "word_cooccurrence": {},
+            "word_next": {},
+            "sentence_similar": {},
+        }
+        graph = CorpusGraph(data)
+        w_ids, s_ids = graph_attention.activate(
+            concept_bundle, graph, word_to_id, query_token_ids=[1, 3]
+        )
+        assert 1 in w_ids and 3 in w_ids
+        assert 0 in s_ids  # sentence 0 contains 1,2
+        assert 1 in s_ids  # sentence 1 contains 2,3
+        assert 2 in s_ids  # sentence 2 contains 3
+
+    def test_activate_with_query_token_ids_union_terms(self):
+        """Terms and query_token_ids are combined (union)."""
+        concept_bundle = {"terms": ["hello"], "definitions": {"hello": "hi"}}
+        word_to_id = {"hello": 1, "world": 2}
+        data = {
+            "sentence_words": {"0": [1], "1": [1, 2], "2": [2]},
+            "word_cooccurrence": {},
+            "word_next": {},
+            "sentence_similar": {},
+        }
+        graph = CorpusGraph(data)
+        w_ids, s_ids = graph_attention.activate(
+            concept_bundle, graph, word_to_id, query_token_ids=[2]
+        )
+        assert w_ids == {1, 2}
+        assert s_ids == {0, 1, 2}
+
+    def test_activate_without_query_token_ids_unchanged(self):
+        """Without query_token_ids, only terms are used (existing behavior)."""
+        concept_bundle = {"terms": ["a"], "definitions": {}}
+        word_to_id = {"a": 1, "b": 2}
+        data = {
+            "sentence_words": {"0": [1], "1": [2]},
+            "word_cooccurrence": {},
+            "word_next": {},
+            "sentence_similar": {},
+        }
+        graph = CorpusGraph(data)
+        w_ids, s_ids = graph_attention.activate(concept_bundle, graph, word_to_id)
+        assert w_ids == {1}
+        assert s_ids == {0}
+
 
 class TestTraverseLoops:
     def test_propagates_to_sentences_and_back_to_words(self):
@@ -266,3 +317,89 @@ class TestRun:
         assert out is not None
         assert out.strip()
         assert "greeting" in out or "Hello world" in out or "hello" in out
+
+    def test_run_with_use_query_token_ids_true_activates_from_query(self, tmp_path: Path):
+        """With use_query_token_ids true, query tokens activate graph; result can reflect query words."""
+        corpus = tmp_path / "corpus"
+        corpus.mkdir(exist_ok=True)
+        with open(corpus / "vocab.json", "w", encoding="utf-8") as f:
+            json.dump(
+                {"word_to_id": {"hello": 0, "world": 1}, "id_to_word": {"0": "hello", "1": "world"}},
+                f,
+            )
+        with open(corpus / "encoded_sentences.jsonl", "w", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {"sentence_id": 0, "genre_id": "general", "text": "Hello world.", "token_ids": [0, 1]}
+                )
+                + "\n"
+            )
+        graph = {
+            "sentence_words": {"0": [0, 1]},
+            "word_cooccurrence": {"0": [1], "1": [0]},
+            "word_next": {"0": {"1": 1}},
+            "sentence_similar": {"0": []},
+        }
+        with open(corpus / "graph.json", "w", encoding="utf-8") as f:
+            json.dump(graph, f)
+
+        class MockEngineEmptyTerms:
+            @staticmethod
+            def get_context_for_description(q):
+                return {"concepts": [], "definitions": {}}
+
+        config = {
+            "default_genre_id": "general",
+            "use_query_token_ids": True,
+            "attention_loop_hops": 2,
+            "attention_loop_top_k": 10,
+            "attention_loop_use_weights": True,
+            "attention_loop_path_groups": 2,
+            "attention_loop_next_span": True,
+        }
+        out = graph_attention.run("hello", MockEngineEmptyTerms(), config, tmp_path)
+        assert out is not None
+        assert "hello" in out.lower() or "Hello" in out
+
+    def test_run_with_use_query_token_ids_false_uses_only_terms(self, tmp_path: Path):
+        """With use_query_token_ids false, activation comes from concept_bundle terms only."""
+        corpus = tmp_path / "corpus"
+        corpus.mkdir(exist_ok=True)
+        with open(corpus / "vocab.json", "w", encoding="utf-8") as f:
+            json.dump(
+                {"word_to_id": {"hello": 0, "world": 1}, "id_to_word": {"0": "hello", "1": "world"}},
+                f,
+            )
+        with open(corpus / "encoded_sentences.jsonl", "w", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {"sentence_id": 0, "genre_id": "general", "text": "Hello world.", "token_ids": [0, 1]}
+                )
+                + "\n"
+            )
+        graph = {
+            "sentence_words": {"0": [0, 1]},
+            "word_cooccurrence": {"0": [1], "1": [0]},
+            "word_next": {"0": {"1": 1}},
+            "sentence_similar": {"0": []},
+        }
+        with open(corpus / "graph.json", "w", encoding="utf-8") as f:
+            json.dump(graph, f)
+
+        class MockEngineWithTerms:
+            @staticmethod
+            def get_context_for_description(q):
+                return {"concepts": [{"name": "hello"}], "definitions": {"hello": "A greeting."}}
+
+        config = {
+            "default_genre_id": "general",
+            "use_query_token_ids": False,
+            "attention_loop_hops": 2,
+            "attention_loop_top_k": 10,
+            "attention_loop_use_weights": True,
+            "attention_loop_path_groups": 2,
+            "attention_loop_next_span": True,
+        }
+        out = graph_attention.run("hello", MockEngineWithTerms(), config, tmp_path)
+        assert out is not None
+        assert out.strip()

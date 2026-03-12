@@ -43,10 +43,10 @@ def get_concept_bundle(engine: Any, query: str) -> dict[str, Any]:
 def _read_sentences_from_jsonl(
     jsonl_path: Path,
     concept_bundle: dict[str, Any],
-    genre_filter: str | None,
+    genre_filter: str | list[str] | None,
     max_sentences: int = 20,
 ) -> list[str]:
-    """Read sentences from a JSONL file; optional genre_filter on genre_id key."""
+    """Read sentences from a JSONL file; optional genre_filter on genre_id (str or list of allowed genres)."""
     terms_set = set((concept_bundle.get("terms") or []))
     sentences: list[str] = []
     try:
@@ -62,7 +62,10 @@ def _read_sentences_from_jsonl(
                         continue
                     if genre_filter is not None:
                         g = obj.get("genre_id") if isinstance(obj, dict) else None
-                        if g != genre_filter:
+                        if isinstance(genre_filter, list):
+                            if g not in genre_filter:
+                                continue
+                        elif g != genre_filter:
                             continue
                     if terms_set:
                         words = set(text.lower().split())
@@ -82,12 +85,12 @@ def get_style_sentences(
     engine: Any,
     data_dir: Path | str | None,
     concept_bundle: dict[str, Any],
-    genre_id: str = "retirement",
+    genre_id: str | list[str] = "retirement",
     register: str | None = None,
 ) -> list[str]:
     """
-    Load genre sentences. Prefers data_dir/corpus/sentences.jsonl (Option C) filtered by genre_id;
-    falls back to data_dir/genre_id/genre_sentences.jsonl. Optionally filter by concept_bundle terms.
+    Load genre sentences. Prefers data_dir/corpus/sentences.jsonl (Option C) filtered by genre_id
+    (str or list of allowed genre_ids). Falls back to per-genre file when genre_id is a single str.
     """
     if not data_dir:
         return []
@@ -100,8 +103,9 @@ def get_style_sentences(
         return _read_sentences_from_jsonl(
             corpus_sentences_path, concept_bundle, genre_filter=genre_id
         )
-    # Backward compatibility: per-genre file
-    jsonl_path = data_path / genre_id / "genre_sentences.jsonl"
+    # Backward compatibility: per-genre file (only when single genre)
+    first_genre = genre_id[0] if isinstance(genre_id, list) else genre_id
+    jsonl_path = data_path / first_genre / "genre_sentences.jsonl"
     if not jsonl_path.exists():
         return []
     return _read_sentences_from_jsonl(
@@ -112,12 +116,12 @@ def get_style_sentences(
 def get_style_sentences_from_graph(
     data_dir: Path | str,
     concept_bundle: dict[str, Any],
-    genre_id: str = "retirement",
+    genre_id: str | list[str] = "retirement",
     max_sentences: int = 20,
 ) -> list[str]:
     """
     Load style sentences using the corpus graph: find sentences containing concept terms,
-    filter by genre_id. Use when corpus/graph.json and corpus/vocab.json exist.
+    filter by genre_id (str or list of allowed genre_ids). Use when corpus/graph.json and corpus/vocab.json exist.
     """
     from .corpus_graph import load_corpus_graph
     from .corpus_vocab import load_vocab
@@ -163,10 +167,11 @@ def get_style_sentences_from_graph(
     if not terms_set:
         candidate_sids = set(graph.sentence_ids())
 
+    allowed_genres = {genre_id} if isinstance(genre_id, str) else set(genre_id)
     out: list[str] = []
     for sid in candidate_sids:
         rec = index.get(sid)
-        if not rec or rec.get("genre_id") != genre_id:
+        if not rec or rec.get("genre_id") not in allowed_genres:
             continue
         text = (rec.get("text") or "").strip()
         if text:

@@ -34,8 +34,18 @@ def _load_anchor_config() -> dict[str, Any]:
         return {}
 
 
+_RELATIVE_PATH_KEYS = (
+    "align_data_dir",
+    "feedback_path",
+    "feedback_weights_path",
+    "grammar_rules_path",
+    "grammar_examples_path",
+)
+
+
 def get_config() -> dict[str, Any]:
-    """Merged config: paths + anchor.json. Env overrides: ANCHOR_DICTIONARY_PATH, etc."""
+    """Merged config: paths + anchor.json. Env overrides: ANCHOR_DICTIONARY_PATH, etc.
+    Relative paths for align_data_dir, feedback_path, etc. are resolved against project root."""
     paths = _load_paths()
     anchor_cfg = _load_anchor_config()
     out = {**paths, **anchor_cfg}
@@ -43,14 +53,28 @@ def get_config() -> dict[str, Any]:
         out["dictionary_path"] = os.environ["ANCHOR_DICTIONARY_PATH"]
     if os.environ.get("ANCHOR_DATA_DIR"):
         out["align_data_dir"] = os.environ["ANCHOR_DATA_DIR"]
+    for key in _RELATIVE_PATH_KEYS:
+        val = out.get(key)
+        if isinstance(val, str) and val.strip() and not Path(val).is_absolute():
+            out[key] = str((_ANCHOR_ROOT / val).resolve())
     return out
 
 
 def get_engine() -> Any | None:
-    """Build BasisEngine from dictionary_path. Returns None if path missing, import fails, or use_dictionary is false."""
+    """Build dictionary engine. Prefers Webster if webster_json_path set and exists; else BasisEngine from dictionary_path."""
     cfg = get_config()
     if not cfg.get("use_dictionary", True):
         return None
+    webster_path = cfg.get("webster_json_path")
+    if webster_path:
+        path = Path(webster_path).resolve()
+        if path.exists():
+            try:
+                from anchor.webster_engine import WebsterEngine
+                return WebsterEngine(path)
+            except ImportError:
+                from webster_engine import WebsterEngine
+                return WebsterEngine(path)
     dict_path = cfg.get("dictionary_path")
     if not dict_path:
         return None
@@ -72,9 +96,9 @@ def get_generator_kind() -> str:
     cfg = get_config()
     if cfg.get("use_scratchllm", False) and cfg.get("scratchllm_path") and Path(cfg["scratchllm_path"]).exists():
         return "scratchllm"
-    if cfg.get("use_corpus_graph", True) and cfg.get("align_data_dir"):
+    if cfg.get("use_graph_llm", True) and cfg.get("use_corpus_graph", True) and cfg.get("align_data_dir"):
         data_path = Path(cfg["align_data_dir"])
-        if (data_path / "corpus" / "graph.json").exists():
+        if data_path.exists() and (data_path / "corpus" / "graph.json").exists():
             if cfg.get("use_attention_loop", True):
                 return "graph_attention"
             return "corpus"

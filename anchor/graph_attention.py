@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .corpus_graph import CorpusGraph, load_corpus_graph
-from .corpus_vocab import load_vocab
+from .corpus_vocab import load_vocab, tokenize
 from . import retrieval
 
 
@@ -39,10 +39,12 @@ def activate(
     concept_bundle: dict[str, Any],
     graph: CorpusGraph,
     word_to_id: dict[str, int],
+    query_token_ids: list[int] | None = None,
 ) -> tuple[set[int], set[int]]:
     """
     Activate nodes from query: map concept terms to word_ids, then to sentence_ids
-    that contain those words. Returns (activated_word_ids, activated_sentence_ids).
+    that contain those words. When query_token_ids is provided, also activate from
+    those word IDs (query-as-numbers). Returns (activated_word_ids, activated_sentence_ids).
     """
     terms = concept_bundle.get("terms") or []
     activated_word_ids: set[int] = set()
@@ -55,6 +57,11 @@ def activate(
         activated_word_ids.add(wid)
         for sid in graph.sentences_containing_word(wid):
             activated_sentence_ids.add(sid)
+    if query_token_ids:
+        for wid in query_token_ids:
+            activated_word_ids.add(wid)
+            for sid in graph.sentences_containing_word(wid):
+                activated_sentence_ids.add(sid)
     if not activated_word_ids and not activated_sentence_ids:
         # No terms in vocab: activate all sentences so we still have a path
         activated_sentence_ids = set(graph.sentence_ids())
@@ -66,7 +73,7 @@ def traverse_loops(
     activated_sentence_ids: set[int],
     graph: CorpusGraph,
     num_hops: int = 2,
-    genre_id: str | None = None,
+    genre_id: str | list[str] | None = None,
     encoded_index: dict[int, dict[str, Any]] | None = None,
     use_weights: bool = True,
 ) -> tuple[dict[int, float], dict[int, float]]:
@@ -79,11 +86,15 @@ def traverse_loops(
     word_visits: dict[int, float] = {wid: 1.0 for wid in activated_word_ids}
     sentence_visits: dict[int, float] = {sid: 1.0 for sid in activated_sentence_ids}
 
+    allowed_genres: set[str] = set()
+    if genre_id is not None:
+        allowed_genres = {genre_id} if isinstance(genre_id, str) else set(genre_id)
+
     def sentence_ok(sid: int) -> bool:
-        if encoded_index is None or genre_id is None:
+        if encoded_index is None or not allowed_genres:
             return True
         rec = encoded_index.get(sid)
-        return rec is not None and rec.get("genre_id") == genre_id
+        return rec is not None and rec.get("genre_id") in allowed_genres
 
     for _ in range(max(0, num_hops - 1)):
         w_copy = dict(word_visits)
@@ -157,7 +168,7 @@ def refine_answer(
     concept_bundle: dict[str, Any],
     encoded_index: dict[int, dict[str, Any]],
     id_to_word: dict[int, str],
-    genre_id: str = "general",
+    genre_id: str | list[str] = "general",
     max_sentences: int = 15,
     max_definitions: int = 10,
     secondary_word_ids: list[int] | None = None,
@@ -226,11 +237,12 @@ def refine_answer(
 
     seen_sents: set[str] = set()
     sentence_texts: list[str] = []
+    sent_allowed = {genre_id} if isinstance(genre_id, str) else set(genre_id)
     for sid in all_sids:
         if len(sentence_texts) >= max_sentences:
             break
         rec = encoded_index.get(sid)
-        if not rec or rec.get("genre_id") != genre_id:
+        if not rec or rec.get("genre_id") not in sent_allowed:
             continue
         text = (rec.get("text") or "").strip()
         if text and text not in seen_sents:
@@ -260,11 +272,12 @@ def refine_answer(
 def _next_span_sentence_ids(
     top_sentence_ids: list[int],
     graph: CorpusGraph,
-    genre_id: str,
+    genre_id: str | list[str],
     encoded_index: dict[int, dict[str, Any]],
     top_k_per_sentence: int = 3,
 ) -> list[int]:
     """Collect sentence IDs one step from top sentences (similar_sentences), genre-filtered, deduped."""
+    allowed = {genre_id} if isinstance(genre_id, str) else set(genre_id)
     seen = set(top_sentence_ids)
     result: list[int] = []
     for sid in top_sentence_ids:
@@ -272,7 +285,7 @@ def _next_span_sentence_ids(
             if sid2 in seen:
                 continue
             rec = encoded_index.get(sid2)
-            if rec and rec.get("genre_id") == genre_id:
+            if rec and rec.get("genre_id") in allowed:
                 seen.add(sid2)
                 result.append(sid2)
     return result
@@ -308,7 +321,11 @@ def run(
     if not encoded_index:
         return None
 
-    genre_id = config.get("default_genre_id", "general")
+    genre_ids_cfg = config.get("genre_ids")
+    genre_id: str | list[str] = (
+        genre_ids_cfg if isinstance(genre_ids_cfg, list) and genre_ids_cfg
+        else config.get("default_genre_id", "general")
+    )
     num_hops = int(config.get("attention_loop_hops", 4))
     top_k = int(config.get("attention_loop_top_k", 10))
     use_weights = config.get("attention_loop_use_weights", True)
@@ -316,8 +333,18 @@ def run(
     next_span = config.get("attention_loop_next_span", True)
     max_iter = max(1, int(config.get("attention_loop_max_iter", 1)))
 
+    query_token_ids: list[int] | None = None
+    if config.get("use_query_token_ids", True) and (query or "").strip():
+        query_token_ids = list(
+            dict.fromkeys(
+                word_to_id[t] for t in tokenize(query) if t in word_to_id
+            )
+        )
+        if not query_token_ids:
+            query_token_ids = None
+
     activated_word_ids, activated_sentence_ids = activate(
-        concept_bundle, graph, word_to_id
+        concept_bundle, graph, word_to_id, query_token_ids=query_token_ids
     )
     word_visits: dict[int, float] = {}
     sentence_visits: dict[int, float] = {}

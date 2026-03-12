@@ -64,46 +64,59 @@ class AnchorEngine:
         """
         effective_query = self._build_effective_query(question, conversation_history)
         concept_bundle = retrieval.get_concept_bundle(self._engine, effective_query)
+        data_dir = self._config.get("align_data_dir") or self._config.get("ANCHOR_DATA_DIR")
+        data_path = Path(data_dir) if data_dir and str(data_dir).strip() else None
         use_style = self._config.get("use_style_sentences", True)
         if not use_style:
             style_sentences = []
         else:
-            data_dir = self._config.get("align_data_dir") or self._config.get("ANCHOR_DATA_DIR")
-            genre_id = self._config.get("default_genre_id", "retirement")
+            genre_ids_cfg = self._config.get("genre_ids")
+            if isinstance(genre_ids_cfg, list) and genre_ids_cfg:
+                genre_filter: str | list[str] = genre_ids_cfg
+            else:
+                genre_filter = self._config.get("default_genre_id", "retirement")
             register = self._config.get("register")
-            data_path = Path(data_dir) if data_dir and str(data_dir).strip() else None
             use_graph = self._config.get("use_corpus_graph", True) and data_path and (data_path / "corpus" / "graph.json").exists()
             if use_graph:
                 style_sentences = retrieval.get_style_sentences_from_graph(
-                    data_path, concept_bundle, genre_id=genre_id
+                    data_path, concept_bundle, genre_id=genre_filter
                 )
             else:
                 style_sentences = retrieval.get_style_sentences(
                     self._engine,
                     data_path,
                     concept_bundle,
-                    genre_id=genre_id,
+                    genre_id=genre_filter,
                     register=register,
                 )
-        response_text = generator.generate(
+        response_text, gen_meta = generator.generate(
             question,
             concept_bundle,
             style_sentences,
             self._config,
             generator_kind=self._generator_kind,
         )
+        if self._config.get("use_naturalize", False) and data_path and (data_path / "corpus" / "graph.json").exists():
+            from . import naturalize
+            response_text = naturalize.naturalize(response_text, data_path, self._config)
+        if self._config.get("use_grammar") and (
+            self._config.get("grammar_rules_path") or self._config.get("grammar_command")
+        ):
+            from . import grammar
+            response_text = grammar.rewrite(response_text, self._config)
         use_critic = self._config.get("use_critic", True)
         if use_critic:
             critic_info = critic.score_and_decide(response_text, self._engine, self._config)
         else:
             critic_info = {"score": 1.0, "num_grounded": 0, "num_content": 0, "decision": "accept", "show_warning": False, "message": "Critic disabled."}
-        extras = {"concept_bundle": concept_bundle, "style_sentences": style_sentences} if return_extras else None
+        extras = {"generator_meta": gen_meta}
+        if return_extras:
+            extras["concept_bundle"] = concept_bundle
+            extras["style_sentences"] = style_sentences
 
         if stream:
             return self._query_stream(response_text, critic_info, extras)
-        if return_extras:
-            return (response_text, critic_info, extras)
-        return (response_text, critic_info, None)
+        return (response_text, critic_info, extras)
 
     def _query_stream(
         self, response_text: str, critic_info: dict[str, Any], extras: dict[str, Any] | None

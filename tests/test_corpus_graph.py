@@ -65,6 +65,27 @@ class TestBuildGraph:
         assert "0" not in g["sentence_words"]
         assert "1" in g["sentence_words"]
 
+    def test_encoded_dictionary_merged_into_word_next(self, tmp_path: Path):
+        enc = tmp_path / "encoded.jsonl"
+        with open(enc, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"sentence_id": 0, "token_ids": [1, 2], "text": "x y"}) + "\n")
+        dict_path = tmp_path / "encoded_dictionary.jsonl"
+        dict_path.write_text(json.dumps({"term": "foo", "token_ids": [5, 6, 7]}) + "\n")
+        g = build_graph(enc, encoded_dictionary_path=dict_path)
+        cg = CorpusGraph(g)
+        assert cg.next_word_counts(5) == {6: 1}
+        assert cg.next_word_counts(6) == {7: 1}
+
+    def test_no_encoded_dictionary_path_skips_merge(self, tmp_path: Path):
+        enc = tmp_path / "encoded.jsonl"
+        with open(enc, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"sentence_id": 0, "token_ids": [1, 2], "text": "x y"}) + "\n")
+        dict_path = tmp_path / "encoded_dictionary.jsonl"
+        dict_path.write_text(json.dumps({"term": "foo", "token_ids": [5, 6, 7]}) + "\n")
+        g = build_graph(enc, encoded_dictionary_path=None)
+        cg = CorpusGraph(g)
+        assert cg.next_word_counts(5) == {}
+
     def test_context_to_sentences_index_built(self, tmp_path: Path):
         p = tmp_path / "encoded.jsonl"
         with open(p, "w", encoding="utf-8") as f:

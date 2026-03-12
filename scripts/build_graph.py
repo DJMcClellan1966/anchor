@@ -56,6 +56,17 @@ def main() -> None:
         action="store_true",
         help="Skip writing corpus_model.json",
     )
+    parser.add_argument(
+        "--encoded-dictionary",
+        type=Path,
+        default=None,
+        help="Path to encoded_dictionary.jsonl (or auto-detect data_dir/corpus/encoded_dictionary.jsonl)",
+    )
+    parser.add_argument(
+        "--no-encoded-dictionary",
+        action="store_true",
+        help="Do not merge encoded_dictionary.jsonl even if present (opt out of dictionary-as-numbers patterns)",
+    )
     args = parser.parse_args()
 
     encoded_path = args.data_dir / args.encoded_file
@@ -63,10 +74,19 @@ def main() -> None:
         print(f"Missing {encoded_path}. Run build_vocab.py first.")
         raise SystemExit(1)
 
+    encoded_dict_path = None
+    if not args.no_encoded_dictionary:
+        if args.encoded_dictionary is not None:
+            encoded_dict_path = args.encoded_dictionary if args.encoded_dictionary.exists() else None
+        else:
+            auto = args.data_dir / "corpus" / "encoded_dictionary.jsonl"
+            encoded_dict_path = auto if auto.exists() else None
+
     graph = build_graph(
         encoded_path,
         top_similar_per_sentence=args.top_similar,
         context_length=args.context_length,
+        encoded_dictionary_path=encoded_dict_path,
     )
     out_path = args.data_dir / args.graph_file
     save_graph(graph, out_path)

@@ -13,21 +13,21 @@ from anchor.generator import generate
 
 class TestGenerateStub:
     def test_empty_bundle_returns_message(self):
-        out = generate(
+        out, _ = generate(
             "q", {"terms": [], "definitions": {}}, [], {},
             generator_kind="stub"
         )
         assert "No concepts" in out or "dictionary" in out.lower()
 
     def test_terms_only(self):
-        out = generate(
+        out, _ = generate(
             "q", {"terms": ["a", "b"], "definitions": {}}, [], {},
             generator_kind="stub"
         )
         assert "a" in out and "b" in out
 
     def test_definitions_formatted(self):
-        out = generate(
+        out, _ = generate(
             "q",
             {"terms": [], "definitions": {"x": "Definition of x."}},
             [], {"include_definitions_in_response": True},
@@ -36,7 +36,7 @@ class TestGenerateStub:
         assert "x" in out and "Definition" in out
 
     def test_list_definition_first_element_used(self):
-        out = generate(
+        out, _ = generate(
             "q",
             {"terms": [], "definitions": {"y": ["first", "second"]}},
             [], {"include_definitions_in_response": True},
@@ -47,7 +47,7 @@ class TestGenerateStub:
     def test_stub_answer_style_when_definitions_disabled(self):
         """When include_definitions_in_response is false, no term: definition lines; may include style_sentences."""
         config = {"include_definitions_in_response": False}
-        out = generate(
+        out, _ = generate(
             "q", {"terms": ["alpha", "beta"], "definitions": {"alpha": "Def A."}},
             ["First style sentence.", "Second."], config, generator_kind="stub"
         )
@@ -58,7 +58,7 @@ class TestGenerateStub:
     def test_stub_definition_style_when_definitions_enabled(self):
         """When include_definitions_in_response is true, definition lines present."""
         config = {"include_definitions_in_response": True}
-        out = generate(
+        out, _ = generate(
             "q", {"terms": ["x"], "definitions": {"x": "Definition of x."}},
             [], config, generator_kind="stub"
         )
@@ -67,7 +67,7 @@ class TestGenerateStub:
 
 class TestGenerateCorpusFallback:
     def test_no_data_dir_falls_back_to_stub(self):
-        out = generate(
+        out, _ = generate(
             "q", {"terms": ["t"], "definitions": {}}, [], {"align_data_dir": None},
             generator_kind="corpus"
         )
@@ -75,14 +75,14 @@ class TestGenerateCorpusFallback:
 
     def test_missing_graph_falls_back_to_stub(self, tmp_path):
         (tmp_path / "corpus").mkdir(exist_ok=True)
-        out = generate(
+        out, _ = generate(
             "q", {"terms": ["t"], "definitions": {}}, [], {"align_data_dir": str(tmp_path)},
             generator_kind="corpus"
         )
         assert "t" in out or "Concepts" in out
 
     def test_unknown_generator_kind_uses_stub(self):
-        out = generate(
+        out, _ = generate(
             "q", {"terms": ["x"], "definitions": {}}, [], {},
             generator_kind="unknown_kind"
         )
@@ -116,7 +116,7 @@ class TestGenerateCorpusFallback:
             "corpus_hybrid_beta": 0.7,
             "corpus_max_tokens": 20,
         }
-        out = generate(
+        out, _ = generate(
             "q", {"terms": ["Hello"], "definitions": {}},
             ["Hello world"], config, generator_kind="corpus"
         )
@@ -125,7 +125,7 @@ class TestGenerateCorpusFallback:
 
     def test_graph_attention_missing_data_falls_back_to_stub(self):
         config = {"align_data_dir": None}
-        out = generate(
+        out, _ = generate(
             "q", {"terms": ["x"], "definitions": {"x": "Def of x."}},
             [], config, generator_kind="graph_attention"
         )
@@ -133,7 +133,7 @@ class TestGenerateCorpusFallback:
 
     def test_scratchllm_missing_path_falls_back_to_stub(self):
         config = {"scratchllm_path": None}
-        out = generate(
+        out, _ = generate(
             "q", {"terms": ["x"], "definitions": {"x": "Def of x."}},
             [], config, generator_kind="scratchllm"
         )
@@ -141,7 +141,7 @@ class TestGenerateCorpusFallback:
 
     def test_scratchllm_nonexistent_path_falls_back_to_stub(self, tmp_path: Path):
         config = {"scratchllm_path": str(tmp_path / "nonexistent_scratchllm")}
-        out = generate(
+        out, _ = generate(
             "q", {"terms": ["x"], "definitions": {"x": "Def of x."}},
             [], config, generator_kind="scratchllm"
         )
@@ -151,7 +151,7 @@ class TestGenerateCorpusFallback:
         """When scratchllm_path exists but base.retrieve is not there, fall back to stub."""
         (tmp_path / "base").mkdir(parents=True, exist_ok=True)
         config = {"scratchllm_path": str(tmp_path)}
-        out = generate(
+        out, _ = generate(
             "q", {"terms": ["x"], "definitions": {"x": "Def of x."}},
             [], config, generator_kind="scratchllm"
         )

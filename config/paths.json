@@ -1,5 +1,6 @@
 {
   "dictionary_path": "C:\\Users\\DJMcC\\OneDrive\\Desktop\\dictionary\\dictionary",
+  "webster_json_path": null,
   "scratchllm_path": null,
-  "align_data_dir": null
+  "align_data_dir": "data"
 }

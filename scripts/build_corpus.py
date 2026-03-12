@@ -44,13 +44,14 @@ def build_from_directory(
     input_dir: Path,
     output_dir: Path,
     default_genre: str = "general",
+    force_genre: str | None = None,
     extensions: tuple[str, ...] = (".txt", ".jsonl"),
     also_write_per_genre: bool = True,
 ) -> int:
     """
     Scan input_dir for text files, extract sentences, tag with genre, write
-    output_dir/corpus/sentences.jsonl. If also_write_per_genre, write
-    output_dir/<genre_id>/genre_sentences.jsonl for each genre.
+    output_dir/corpus/sentences.jsonl. If force_genre is set, every sentence gets that genre_id.
+    If also_write_per_genre, write output_dir/<genre_id>/genre_sentences.jsonl for each genre.
     Returns number of sentences written.
     """
     corpus_dir = output_dir / "corpus"
@@ -78,7 +79,7 @@ def build_from_directory(
                     obj = json.loads(line)
                     t = obj.get("text") if isinstance(obj, dict) else None
                     if isinstance(t, str) and t.strip():
-                        g = obj.get("genre_id") or _assign_genre(t, default_genre)
+                        g = force_genre or obj.get("genre_id") or _assign_genre(t, default_genre)
                         key = (t.strip(), g)
                         if key not in seen:
                             seen.add(key)
@@ -89,7 +90,7 @@ def build_from_directory(
             for sent in _sentence_split(text):
                 if not sent or len(sent) < 3:
                     continue
-                g = _assign_genre(sent, default_genre)
+                g = force_genre or _assign_genre(sent, default_genre)
                 key = (sent, g)
                 if key not in seen:
                     seen.add(key)
@@ -138,6 +139,11 @@ def main() -> None:
         help="Default genre_id when not inferred (default: general)",
     )
     parser.add_argument(
+        "--genre",
+        default=None,
+        help="Force this genre_id for every sentence (e.g. encyclopedia)",
+    )
+    parser.add_argument(
         "--no-per-genre",
         action="store_true",
         help="Do not write per-genre genre_sentences.jsonl",
@@ -147,6 +153,7 @@ def main() -> None:
         args.input_dir,
         args.output_dir,
         default_genre=args.default_genre,
+        force_genre=args.genre,
         also_write_per_genre=not args.no_per_genre,
     )
     print(f"Wrote {n} sentences to {args.output_dir / 'corpus' / 'sentences.jsonl'}")

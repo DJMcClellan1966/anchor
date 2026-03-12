@@ -12,8 +12,47 @@ _ANCHOR_ROOT = Path(__file__).resolve().parent
 if str(_ANCHOR_ROOT) not in sys.path:
     sys.path.insert(0, str(_ANCHOR_ROOT))
 
+import json
+
 from anchor.engine import AnchorEngine
 from anchor.wire import get_config, get_engine, get_generator_kind
+
+
+def _run_check(config: dict, engine: object) -> None:
+    """Print setup status: dictionary, data dir, graph/vocab/encoded index, generator."""
+    print("Dictionary:", "OK" if engine is not None else "missing")
+    data_dir = config.get("align_data_dir")
+    if not data_dir:
+        print("Data dir: not set (align_data_dir)")
+    else:
+        data_path = Path(data_dir)
+        print("Data dir:", data_path, "exists" if data_path.exists() else "missing")
+        if data_path.exists():
+            graph_path = data_path / "corpus" / "graph.json"
+            vocab_path = data_path / "corpus" / "vocab.json"
+            encoded_path = data_path / "corpus" / "encoded_sentences.jsonl"
+            print("  corpus/graph.json:", "exists" if graph_path.exists() else "missing")
+            if vocab_path.exists():
+                try:
+                    with open(vocab_path, encoding="utf-8") as f:
+                        obj = json.load(f)
+                    n = len(obj.get("word_to_id", {}))
+                    print("  corpus/vocab.json: exists,", n, "words")
+                except Exception:
+                    print("  corpus/vocab.json: exists (read error)")
+            else:
+                print("  corpus/vocab.json: missing")
+            if encoded_path.exists():
+                try:
+                    with open(encoded_path, encoding="utf-8") as f:
+                        n = sum(1 for _ in f if _.strip())
+                    print("  corpus/encoded_sentences.jsonl: exists,", n, "lines")
+                except Exception:
+                    print("  corpus/encoded_sentences.jsonl: exists (read error)")
+            else:
+                print("  corpus/encoded_sentences.jsonl: missing")
+    generator_kind = get_generator_kind()
+    print("Generator:", generator_kind)
 
 
 def _print_result(
@@ -24,12 +63,21 @@ def _print_result(
     verbose: bool = False,
     concept_bundle: dict | None = None,
     style_count: int | None = None,
+    generator_meta: dict | None = None,
 ) -> None:
-    """Print response and optional pipeline details."""
+    """Print response and optional pipeline details. generator_meta can contain fallback_reason, graph_sentences, vocab_size."""
+    gen_meta = generator_meta or {}
+    if gen_meta.get("fallback_reason"):
+        print(f"[Anchor] {gen_meta['fallback_reason']}")
+    g_sentences = gen_meta.get("graph_sentences")
+    g_vocab = gen_meta.get("vocab_size")
+    if g_sentences is not None and g_vocab is not None:
+        print(f"Generator: graph_attention (graph: {g_sentences} sentences, vocab: {g_vocab})")
+    else:
+        print(f"Generator: {generator_kind}")
     if verbose and concept_bundle is not None:
         terms = concept_bundle.get("terms") or []
         print("---")
-        print(f"Generator: {generator_kind}")
         print(f"Concepts: {', '.join(terms[:12])}{'...' if len(terms) > 12 else ''}")
         if style_count is not None:
             print(f"Style sentences: {style_count}")
@@ -54,10 +102,16 @@ def main() -> None:
     parser.add_argument("--verbose", "-v", action="store_true", help="Show pipeline: generator, concepts, style count, critic details")
     parser.add_argument("--stream", action="store_true", help="Stream response in chunks (LLM-like)")
     parser.add_argument("--feedback", choices=["accept", "reject"], help="Record feedback for this response (accept or reject)")
+    parser.add_argument("--check", action="store_true", help="Check setup and exit (dictionary, data dir, graph, generator).")
     args = parser.parse_args()
 
     config = get_config()
     engine = get_engine()
+
+    if args.check:
+        _run_check(config, engine)
+        sys.exit(0 if engine is not None else 1)
+
     if engine is None:
         print("Anchor: dictionary_path not set or dictionary not found.", file=sys.stderr)
         print("Set dictionary_path in config/paths.json or ANCHOR_DICTIONARY_PATH.", file=sys.stderr)
@@ -83,9 +137,9 @@ def main() -> None:
             )
             conversation_history.append((line, response))
             if args.verbose and extras:
-                _print_result(line, response, critic_info, generator_kind, verbose=True, concept_bundle=extras.get("concept_bundle"), style_count=len(extras.get("style_sentences") or []))
+                _print_result(line, response, critic_info, generator_kind, verbose=True, concept_bundle=extras.get("concept_bundle"), style_count=len(extras.get("style_sentences") or []), generator_meta=extras.get("generator_meta"))
             else:
-                _print_result(line, response, critic_info, generator_kind)
+                _print_result(line, response, critic_info, generator_kind, generator_meta=extras.get("generator_meta"))
         return
 
     question = args.question
@@ -110,10 +164,18 @@ def main() -> None:
         score = critic_info.get("score")
         decision = critic_info.get("decision")
         msg = critic_info.get("message", "")
+        gen_meta = (extras or {}).get("generator_meta") or {}
+        if gen_meta.get("fallback_reason"):
+            print(f"[Anchor] {gen_meta['fallback_reason']}")
+        g_sentences = gen_meta.get("graph_sentences")
+        g_vocab = gen_meta.get("vocab_size")
+        if g_sentences is not None and g_vocab is not None:
+            print(f"Generator: graph_attention (graph: {g_sentences} sentences, vocab: {g_vocab})")
+        else:
+            print(f"Generator: {generator_kind}")
         if args.verbose and extras:
             terms = (extras.get("concept_bundle") or {}).get("terms") or []
             print("---")
-            print(f"Generator: {generator_kind}")
             print(f"Concepts: {', '.join(terms[:12])}{'...' if len(terms) > 12 else ''}")
             print(f"Style sentences: {len(extras.get('style_sentences') or [])}")
             print("---")
@@ -128,10 +190,10 @@ def main() -> None:
         extras = extras or {}
         concept_bundle = extras.get("concept_bundle")
         style_sentences = extras.get("style_sentences") or []
-        _print_result(question, response, critic_info, generator_kind, verbose=True, concept_bundle=concept_bundle, style_count=len(style_sentences))
+        _print_result(question, response, critic_info, generator_kind, verbose=True, concept_bundle=concept_bundle, style_count=len(style_sentences), generator_meta=extras.get("generator_meta"))
     else:
-        response, critic_info, _ = anchor_engine.query(question)
-        _print_result(question, response, critic_info, generator_kind)
+        response, critic_info, extras = anchor_engine.query(question)
+        _print_result(question, response, critic_info, generator_kind, generator_meta=(extras or {}).get("generator_meta"))
 
     if args.feedback:
         from pathlib import Path

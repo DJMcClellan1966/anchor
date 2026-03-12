@@ -18,13 +18,35 @@ def _jaccard(a: set[int], b: set[int]) -> float:
     return len(a & b) / len(a | b)
 
 
+def _merge_token_sequence_into_graph(
+    token_ids: list[int],
+    word_cooccurrence: dict[int, set[int]],
+    word_next: dict[int, dict[int, int]],
+) -> None:
+    """Update word_cooccurrence and word_next from a single token ID sequence (e.g. a definition)."""
+    if not token_ids:
+        return
+    for i, wid in enumerate(token_ids):
+        word_cooccurrence.setdefault(wid, set())
+        for w in token_ids:
+            if w != wid:
+                word_cooccurrence[wid].add(w)
+        if i + 1 < len(token_ids):
+            nxt = token_ids[i + 1]
+            word_next.setdefault(wid, {})
+            word_next[wid][nxt] = word_next[wid].get(nxt, 0) + 1
+
+
 def build_graph(
     encoded_sentences_path: Path,
     top_similar_per_sentence: int = 20,
     context_length: int = 5,
+    encoded_dictionary_path: Path | None = None,
 ) -> dict[str, Any]:
     """
     Build graph from encoded_sentences.jsonl.
+    If encoded_dictionary_path is provided, merge definition token sequences into
+    word_next and word_cooccurrence (recurring patterns from dictionary + corpus).
     Returns dict with:
       sentence_words: {sentence_id: [token_ids]}
       word_cooccurrence: {word_id: [word_id, ...]} (list of co-occurring word ids)
@@ -70,6 +92,21 @@ def build_graph(
                         word_next[wid][nxt] = word_next[wid].get(nxt, 0) + 1
             except (json.JSONDecodeError, TypeError, KeyError):
                 continue
+
+    if encoded_dictionary_path and encoded_dictionary_path.exists():
+        with open(encoded_dictionary_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                    token_ids = obj.get("token_ids", [])
+                    if isinstance(token_ids, list) and token_ids:
+                        token_ids = [int(x) for x in token_ids]
+                        _merge_token_sequence_into_graph(token_ids, word_cooccurrence, word_next)
+                except (json.JSONDecodeError, TypeError, ValueError, KeyError):
+                    continue
 
     # Convert co-occurrence sets to lists for JSON
     word_cooccurrence_list: dict[int, list[int]] = {

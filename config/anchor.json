@@ -2,6 +2,11 @@
   "critic_accept_threshold": 0.25,
   "critic_low_warn_threshold": 0.15,
   "default_genre_id": "retirement",
+  "genre_ids": ["retirement", "definitional"],
+  "use_grammar": false,
+  "grammar_rules_path": null,
+  "grammar_command": null,
+  "grammar_examples_path": null,
   "register": "definitional",
   "use_dictionary": true,
   "use_corpus_graph": true,
@@ -30,5 +35,10 @@
   "corpus_next_sentences_top_k": 3,
   "corpus_hybrid_context_length": 5,
   "corpus_hybrid_beta": 0.7,
-  "corpus_max_tokens": 80
+  "corpus_max_tokens": 80,
+  "use_naturalize": true,
+  "naturalize_max_tokens": 12,
+  "naturalize_context_length": 5,
+  "use_query_token_ids": true,
+  "use_graph_llm": true
 }
