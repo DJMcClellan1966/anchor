@@ -1,0 +1,6 @@
+# Optional: only needed to build corpus from Hugging Face datasets
+# pip install -r requirements-corpus.txt
+datasets>=2.0.0
+
+# Some datasets (e.g. Parquet-backed) may require:
+# pyarrow

@@ -32,7 +32,7 @@ def _generate_corpus(
     style_sentences: list[str],
     config: dict[str, Any],
 ) -> str:
-    """Generate using corpus graph and next-sentence retrieval. Fallback to stub if graph/corpus missing."""
+    """Generate using corpus graph: hybrid next-token when index present, else next-sentence retrieval."""
     from pathlib import Path
 
     data_dir = config.get("align_data_dir") or config.get("ANCHOR_DATA_DIR")
@@ -52,9 +52,45 @@ def _generate_corpus(
         graph = load_corpus_graph(data_path)
         if graph is None:
             return _generate_stub(question, concept_bundle, style_sentences, config)
-        word_to_id, _ = load_vocab(vocab_path)
+        word_to_id, id_to_word = load_vocab(vocab_path)
         genre_id = config.get("default_genre_id", "retirement")
         top_k = int(config.get("corpus_next_sentences_top_k", 3))
+        context_length = int(config.get("corpus_hybrid_context_length", 5))
+        beta = float(config.get("corpus_hybrid_beta", 0.7))
+        max_tokens = int(config.get("corpus_max_tokens", 80))
+
+        if graph.has_context_index() and style_sentences and word_to_id and id_to_word:
+            from .corpus_vocab import tokenize
+            from .next_token import get_hybrid_next_token_distribution, sample_next_token
+
+            first_text = style_sentences[0] if style_sentences else ""
+            token_ids = [word_to_id[t] for t in tokenize(first_text) if t in word_to_id]
+            if not token_ids:
+                token_ids = [word_to_id[t] for t in tokenize(question) if t in word_to_id]
+            if not token_ids:
+                for s in style_sentences[:3]:
+                    token_ids = [word_to_id[t] for t in tokenize(s) if t in word_to_id]
+                    if token_ids:
+                        break
+            vocab_size = len(word_to_id)
+            out_ids = list(token_ids)
+            while len(out_ids) < max_tokens:
+                context = out_ids[-context_length:] if len(out_ids) >= context_length else out_ids
+                dist = get_hybrid_next_token_distribution(
+                    context, graph, encoded_path, vocab_size,
+                    genre_id=genre_id, beta=beta,
+                )
+                if not dist:
+                    break
+                next_id = sample_next_token(dist)
+                if next_id is None:
+                    break
+                out_ids.append(next_id)
+            tokens = [id_to_word.get(i, "") for i in out_ids]
+            return " ".join(t for t in tokens if t).strip() or _generate_stub(
+                question, concept_bundle, style_sentences, config
+            )
+
         parts = list(style_sentences[:2])
         if parts:
             current = parts[-1]

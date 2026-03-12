@@ -6,7 +6,7 @@ Anchor uses the **dictionary as a symbolic anchor** so an LM stays honest about 
 
 - **Concept bundle** from the dictionary (BasisEngine) for a query.
 - **Style sentences** from genre corpus (optional) filtered by concept.
-- **Generate** via stub (terms + definitions), optionally scratchLLM/Align, or **corpus** (Option C: graph-based next-sentence).
+- **Generate** via stub (terms + definitions), optionally scratchLLM/Align, or **corpus** (Option C: graph-based next-sentence or hybrid next-token when the graph has an inverted index).
 - **Critic** scores the response against the graph (accept/warn/reject).
 
 ## Option C: Combined corpus with genre tags
@@ -36,7 +36,7 @@ You can build a single sentence corpus, vocabulary, and word/sentence graph for 
    ```bash
    python scripts/build_graph.py data
    ```
-   Writes `data/corpus/graph.json`.
+   Writes `data/corpus/graph.json` (with inverted index for context→sentences) and, if vocab exists, `data/corpus/corpus_model.json` (by-product transition matrix for a 1-layer LM). Use `--no-corpus-model` to skip the corpus model. Use `--context-length 5` (default) for the context window.
 
 4. **Use in Anchor** — Set `align_data_dir` in config/paths.json to `data` (or the directory containing `corpus/`). Option C is **on by default** when the graph exists; set `"use_corpus_graph": false` in config/anchor.json to turn it off.
 
@@ -100,7 +100,7 @@ When the required paths/data exist, these are used automatically. Set to `false`
 ## Config
 
 - **config/paths.json** – `dictionary_path`, `scratchllm_path`, `align_data_dir`
-- **config/anchor.json** – `use_dictionary`, `use_corpus_graph`, `use_style_sentences`, `use_critic`, `critic_accept_threshold`, `critic_low_warn_threshold`, `default_genre_id`, `register`, `next_sentence_mode`, `corpus_next_sentences_top_k`
+- **config/anchor.json** – `use_dictionary`, `use_corpus_graph`, `use_style_sentences`, `use_critic`, `critic_accept_threshold`, `critic_low_warn_threshold`, `default_genre_id`, `register`, `next_sentence_mode`, `corpus_next_sentences_top_k`, `corpus_hybrid_context_length`, `corpus_hybrid_beta`, `corpus_max_tokens`
 
 Env overrides: `ANCHOR_DICTIONARY_PATH`, `ANCHOR_DATA_DIR`.
 
@@ -109,13 +109,15 @@ Env overrides: `ANCHOR_DICTIONARY_PATH`, `ANCHOR_DATA_DIR`.
 - **anchor/engine.py** – AnchorEngine: concept -> style -> generate -> critic
 - **anchor/critic.py** – Dictionary score and accept/warn/reject
 - **anchor/retrieval.py** – Concept bundle, style sentences, and graph-based retrieval (Option C)
-- **anchor/generator.py** – Stub, optional scratchLLM/Align, or corpus (next-sentence)
+- **anchor/generator.py** – Stub, optional scratchLLM/Align, or corpus (next-sentence or hybrid next-token)
 - **anchor/corpus_vocab.py** – Vocabulary build and sentence encoding (Option C)
-- **anchor/corpus_graph.py** – Word/sentence graph build and load (Option C)
+- **anchor/corpus_graph.py** – Word/sentence graph build and load; by-product transition matrix (Option C)
 - **anchor/next_sentence.py** – Next-sentence retrieval from graph (Option C)
+- **anchor/next_token.py** – Retrieval + bigram hybrid next-token distribution and sampling
+- **anchor/corpus_model.py** – Load and sample from by-product corpus model (1-layer LM)
 - **anchor/wire.py** – Load config and dictionary (single place that touches external repos)
 - **run_anchor.py** – CLI entry point
 - **scripts/build_corpus.py** – Build combined corpus with genre tags (from local files)
 - **scripts/build_corpus_from_hf.py** – Build corpus from Hugging Face datasets (OpenSubtitles, C4, etc.; requires `datasets`)
 - **scripts/build_vocab.py** – Build vocab and encoded_sentences from corpus
-- **scripts/build_graph.py** – Build corpus graph from encoded sentences
+- **scripts/build_graph.py** – Build corpus graph (with inverted index) and optional corpus_model.json from encoded sentences

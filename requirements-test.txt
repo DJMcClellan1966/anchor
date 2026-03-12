@@ -1,0 +1,2 @@
+# Test dependencies for Anchor
+pytest>=7.0.0
