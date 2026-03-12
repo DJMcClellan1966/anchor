@@ -59,7 +59,7 @@ class TestFullCorpusPipeline:
             "use_corpus_graph": False,
         }
         engine = AnchorEngine(mock_engine_with_context, config, generator_kind="stub")
-        response, critic_info = engine.query("What is a function?")
+        response, critic_info, _ = engine.query("What is a function?")
         assert isinstance(response, str)
         assert len(response) > 0
         assert "function" in response or "code" in response
@@ -81,7 +81,7 @@ class TestAgainstRealEngine:
         config = get_config()
         kind = get_generator_kind()
         anchor_engine = AnchorEngine(engine, config, generator_kind=kind)
-        response, critic_info = anchor_engine.query("What is a function?")
+        response, critic_info, _ = anchor_engine.query("What is a function?")
         assert isinstance(response, str)
         assert len(response.strip()) > 0
         assert "score" in critic_info

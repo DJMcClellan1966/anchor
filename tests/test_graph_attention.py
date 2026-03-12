@@ -76,19 +76,46 @@ class TestTraverseLoops:
         assert s_visits.get(0) >= 1.0
         assert 1 not in s_visits
 
+    def test_use_weights_applies_inverse_length_and_next_word(self):
+        data = {
+            "sentence_words": {"0": [1, 2], "1": [2, 3]},
+            "word_cooccurrence": {},
+            "word_next": {"1": {"2": 2}, "2": {"3": 1}},
+            "sentence_similar": {"0": [[1, 0.5]], "1": [[0, 0.5]]},
+        }
+        graph = CorpusGraph(data)
+        w_visits, s_visits = graph_attention.traverse_loops(
+            {1}, {0}, graph, num_hops=3, use_weights=True
+        )
+        assert 1 in w_visits and 2 in w_visits
+        assert 3 in w_visits  # next-word from 2 after second hop
+        assert 0 in s_visits
+
 
 class TestDetectPattern:
     def test_returns_top_k_by_visit_count(self):
         word_visits = {1: 3.0, 2: 2.0, 3: 1.0}
         sentence_visits = {0: 5.0, 1: 2.0}
-        top_w, top_s = graph_attention.detect_pattern(word_visits, sentence_visits, top_k=2)
+        top_w, top_s, sec_w, sec_s = graph_attention.detect_pattern(word_visits, sentence_visits, top_k=2)
         assert top_w == [1, 2]
         assert top_s == [0, 1]
+        assert sec_w == [] and sec_s == []
+
+    def test_num_groups_two_returns_secondary(self):
+        word_visits = {1: 5.0, 2: 4.0, 3: 3.0, 4: 2.0}
+        sentence_visits = {0: 5.0, 1: 3.0, 2: 1.0}
+        top_w, top_s, sec_w, sec_s = graph_attention.detect_pattern(
+            word_visits, sentence_visits, top_k=2, num_groups=2
+        )
+        assert top_w == [1, 2]
+        assert top_s == [0, 1]
+        assert sec_w == [3, 4]
+        assert sec_s == [2]
 
     def test_min_visits_filters(self):
         word_visits = {1: 3.0, 2: 1.0, 3: 0.5}
         sentence_visits = {0: 2.0}
-        top_w, top_s = graph_attention.detect_pattern(
+        top_w, top_s, _, _ = graph_attention.detect_pattern(
             word_visits, sentence_visits, top_k=10, min_visits=1.5
         )
         assert 1 in top_w
@@ -129,6 +156,77 @@ class TestRefineAnswer:
         )
         assert "No pattern" in out or "Concepts" in out
 
+    def test_refine_answer_includes_secondary_and_next_span(self):
+        concept_bundle = {"terms": ["a"], "definitions": {"a": "Def a."}}
+        id_to_word = {1: "a", 2: "b"}
+        encoded_index = {
+            0: {"text": "Primary.", "genre_id": "general"},
+            1: {"text": "Secondary.", "genre_id": "general"},
+            2: {"text": "Next span.", "genre_id": "general"},
+        }
+        out = graph_attention.refine_answer(
+            [1], [0], concept_bundle, encoded_index, id_to_word,
+            genre_id="general", max_sentences=5,
+            secondary_sentence_ids=[1],
+            next_span_sentence_ids=[2],
+        )
+        assert "Def a" in out or "Primary" in out
+        assert "Secondary" in out
+        assert "Next span" in out
+
+    def test_refine_answer_paragraph_format_and_visit_order(self):
+        concept_bundle = {"terms": ["a"], "definitions": {"a": "Def a."}}
+        id_to_word = {1: "a"}
+        encoded_index = {
+            0: {"text": "First.", "genre_id": "general"},
+            1: {"text": "Second.", "genre_id": "general"},
+        }
+        # sentence_visits: 1 has higher score so it should come first when ordered
+        sentence_visits = {0: 1.0, 1: 2.0}
+        out = graph_attention.refine_answer(
+            [1], [0], concept_bundle, encoded_index, id_to_word,
+            genre_id="general", max_sentences=5,
+            next_span_sentence_ids=[1],
+            sentence_visits=sentence_visits,
+            output_format="paragraph",
+            paragraph_max_chars=500,
+        )
+        assert "In the corpus:" in out
+        assert "Second." in out and "First." in out
+
+    def test_refine_answer_include_definitions_false_no_definition_lines(self):
+        """When include_definitions is False, output has no 'term: definition' pattern; only corpus text."""
+        concept_bundle = {"terms": ["a"], "definitions": {"a": "Def of a."}}
+        id_to_word = {1: "a"}
+        encoded_index = {0: {"text": "Only corpus sentence here.", "genre_id": "general"}}
+        out = graph_attention.refine_answer(
+            [1], [0], concept_bundle, encoded_index, id_to_word,
+            genre_id="general", include_definitions=False,
+        )
+        assert "Only corpus sentence" in out
+        assert "a: Def" not in out and "Def of a" not in out
+
+
+class TestNextSpan:
+    def test_next_span_collects_similar_sentences_genre_filtered(self):
+        data = {
+            "sentence_words": {"0": [1, 2], "1": [2, 3], "2": [1, 3]},
+            "word_cooccurrence": {},
+            "word_next": {},
+            "sentence_similar": {"0": [[1, 0.8], [2, 0.3]], "1": [[0, 0.8]], "2": [[0, 0.3]]},
+        }
+        graph = CorpusGraph(data)
+        encoded_index = {
+            0: {"text": "A", "genre_id": "general"},
+            1: {"text": "B", "genre_id": "general"},
+            2: {"text": "C", "genre_id": "retirement"},
+        }
+        ids = graph_attention._next_span_sentence_ids(
+            [0], graph, "general", encoded_index, top_k_per_sentence=3
+        )
+        assert 1 in ids
+        assert 2 not in ids
+
 
 class TestRun:
     def test_returns_none_when_data_path_missing(self):
@@ -156,7 +254,14 @@ class TestRun:
             def get_context_for_description(q):
                 return {"concepts": [{"name": "hello"}], "definitions": {"hello": "A greeting."}}
 
-        config = {"default_genre_id": "general", "attention_loop_hops": 2, "attention_loop_top_k": 10}
+        config = {
+            "default_genre_id": "general",
+            "attention_loop_hops": 2,
+            "attention_loop_top_k": 10,
+            "attention_loop_use_weights": True,
+            "attention_loop_path_groups": 2,
+            "attention_loop_next_span": True,
+        }
         out = graph_attention.run("hello", MockEngine(), config, tmp_path)
         assert out is not None
         assert out.strip()

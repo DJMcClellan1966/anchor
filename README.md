@@ -9,6 +9,20 @@ Anchor uses the **dictionary as a symbolic anchor** so an LM stays honest about 
 - **Generate** via stub (terms + definitions), optionally scratchLLM/Align, **corpus** (Option C: graph-based next-sentence or hybrid next-token), or **graph attention** (query lights up the graph, attention loops, pattern-based refinement; grounded, non-hallucinatory).
 - **Critic** scores the response against the graph (accept/warn/reject).
 
+### Graph LLM (new type of LLM)
+
+When the graph exists and `use_attention_loop` is true, Anchor runs as a **graph-grounded LLM**: a distinct type of language model (CPU-only, no hallucination by design). The same pipeline is the **Graph LLM forward pass**:
+
+1. **Input:** query.
+2. **Concept bundle:** dictionary lookup for terms and definitions.
+3. **Activate:** query terms map to word/sentence nodes in the graph.
+4. **Traverse:** attention-like propagation (relationship weights, next-word, multi-hop).
+5. **Pattern:** primary + secondary path groups and next-span sentences.
+6. **Refine:** definitions + ordered sentences → response (optionally one paragraph). By default responses are **LLM-like** (single coherent answer); set `include_definitions_in_response: true` to include definition lines.
+7. **Critic:** accept/warn/reject against the dictionary.
+
+Optional add-ons (on by default): **vector geometry** (lightweight word vectors from the graph via `scripts/build_vectors.py`; `use_graph_vectors` is true so when `word_vectors.json` exists, sentence visits are boosted by query–sentence similarity) and **feedback-driven adaptation**: run `python run_anchor.py "Your question?" --feedback accept` to log accepted responses; then `python scripts/build_feedback_weights.py data` to build `feedback_weights.json`; on later runs, sentence_visits are boosted for sentences that appeared in accepted responses to the same query. See Config and Project layout below.
+
 ## Option C: Combined corpus with genre tags
 
 You can build a single sentence corpus, vocabulary, and word/sentence graph for retrieval and next-sentence prediction (all local, CPU-friendly):
@@ -70,6 +84,14 @@ Tests cover errors, completeness, robustness, and breakage (invalid input, missi
 2. Edit **config/paths.json**: set `dictionary_path` to the dictionary repo root (e.g. `.../dictionary/dictionary`). Copy from **config/paths.json.example** if needed.
 3. Optional: set `scratchllm_path` or `align_data_dir` to use scratchLLM or Align for generation.
 
+### ScratchLLM
+
+To use ScratchLLM for generation (fluent, parametric output with dictionary and style context):
+
+1. Set **config/paths.json** `scratchllm_path` to the ScratchLLM repo root (directory that contains `base/retrieve.py`).
+2. Set **config/anchor.json** `use_scratchllm` to `true` to prefer ScratchLLM over the graph generator when both are available.
+3. ScratchLLM must expose `from base.retrieve import retrieve_formal_only` and `retrieve_formal_only(question, truth_base_path=<path_to_jsonl>, top_k=5)` returning a string. Anchor builds the truth base from concept definitions (tier 1, source "dictionary") and style sentences (tier 2, source "genre") and passes it as a temp file.
+
 ## Run
 
 From the anchor folder:
@@ -77,6 +99,8 @@ From the anchor folder:
 ```bash
 python run_anchor.py "What is a function?"
 ```
+
+Use `-v` or `--verbose` to show the pipeline (generator kind, concepts, style sentence count, critic grounded/total). Use `--stream` to stream the response in chunks (LLM-like). Use `--feedback accept` or `--feedback reject` to record feedback for the response (for adaptation; see below). In REPL mode, recent turns are used as context (see `conversation_turn_limit`).
 
 Or start a REPL:
 
@@ -94,14 +118,19 @@ When the required paths/data exist, these are used automatically. Set to `false`
 |------------|---------|-----------|
 | `use_dictionary` | `true` | Dictionary at `dictionary_path` for concept bundle and critic |
 | `use_corpus_graph` | `true` | Graph at `align_data_dir/corpus/graph.json` for style retrieval and corpus generator |
-| `use_attention_loop` | `true` | When true (and graph exists), use graph-attention generator: query activates nodes, attention traverses loops, repeating pattern refines the answer (grounded, non-hallucinatory). Set to `false` to use corpus (hybrid next-token) instead. |
+| `use_scratchllm` | `false` | When true and `scratchllm_path` set, use ScratchLLM for generation (context = definitions + style sentences). Overrides graph generator when both available. |
+| `include_definitions_in_response` | `false` | When false (default), responses are answer-style only (terms + sentences/paragraph). When true, stub and graph generator include definition lines. |
+| `system_prompt` | `null` | Optional. When set, prepended to query for concept lookup and to ScratchLLM truth base (role/instruction). |
+| `conversation_turn_limit` | `2` | In REPL, number of prior (Q, A) pairs merged into context for the next query. |
+| `streaming_max_chunk_chars` | `120` | When using `--stream`, max chunk size when no sentence boundary. |
+| `use_attention_loop` | `true` | When true (and graph exists), use graph-attention generator: query activates nodes, attention traverses loops (with optional relationship weights and next-word propagation), multiple path groups and next-span sentences are combined into the answer (grounded, non-hallucinatory). Set to `false` to use corpus (hybrid next-token) instead. |
 | `use_style_sentences` | `true` | Style sentences from corpus or per-genre files |
 | `use_critic` | `true` | Dictionary-based grounding score and accept/warn/reject |
 
 ## Config
 
 - **config/paths.json** – `dictionary_path`, `scratchllm_path`, `align_data_dir`
-- **config/anchor.json** – `use_dictionary`, `use_corpus_graph`, `use_attention_loop`, `attention_loop_hops`, `attention_loop_top_k`, `use_style_sentences`, `use_critic`, `critic_accept_threshold`, `critic_low_warn_threshold`, `default_genre_id`, `register`, `next_sentence_mode`, `corpus_next_sentences_top_k`, `corpus_hybrid_context_length`, `corpus_hybrid_beta`, `corpus_max_tokens`
+- **config/anchor.json** – `use_dictionary`, `use_corpus_graph`, `use_scratchllm`, `include_definitions_in_response`, `system_prompt`, `conversation_turn_limit`, `streaming_max_chunk_chars`, `use_attention_loop`, `attention_loop_hops` (default 4), `attention_loop_top_k`, `attention_loop_use_weights`, `attention_loop_path_groups`, `attention_loop_next_span`, `attention_loop_max_iter`, `attention_loop_output_format` (default paragraph), `attention_loop_paragraph_max_chars`, `use_graph_vectors` (default true), `graph_vectors_boost`, `feedback_path`, `feedback_weights_path`, `feedback_boost`, `use_style_sentences`, `use_critic`, `critic_accept_threshold`, `critic_low_warn_threshold`, `default_genre_id`, `register`, `next_sentence_mode`, `corpus_next_sentences_top_k`, `corpus_hybrid_context_length`, `corpus_hybrid_beta`, `corpus_max_tokens`
 
 Env overrides: `ANCHOR_DICTIONARY_PATH`, `ANCHOR_DATA_DIR`.
 
@@ -115,7 +144,7 @@ Env overrides: `ANCHOR_DICTIONARY_PATH`, `ANCHOR_DATA_DIR`.
 - **anchor/corpus_graph.py** – Word/sentence graph build and load; by-product transition matrix (Option C)
 - **anchor/next_sentence.py** – Next-sentence retrieval from graph (Option C)
 - **anchor/next_token.py** – Retrieval + bigram hybrid next-token distribution and sampling
-- **anchor/graph_attention.py** – Graph attention loop: activate from query, traverse with attention, detect pattern, refine answer (grounded)
+- **anchor/graph_attention.py** – Graph attention loop: activate from query, traverse with optional edge weights and next-word propagation, detect pattern (primary + secondary path groups), optional next-span from similar sentences, refine answer (grounded)
 - **anchor/corpus_model.py** – Load and sample from by-product corpus model (1-layer LM)
 - **anchor/wire.py** – Load config and dictionary (single place that touches external repos)
 - **run_anchor.py** – CLI entry point
@@ -123,3 +152,7 @@ Env overrides: `ANCHOR_DICTIONARY_PATH`, `ANCHOR_DATA_DIR`.
 - **scripts/build_corpus_from_hf.py** – Build corpus from Hugging Face datasets (OpenSubtitles, C4, etc.; requires `datasets`)
 - **scripts/build_vocab.py** – Build vocab and encoded_sentences from corpus
 - **scripts/build_graph.py** – Build corpus graph (with inverted index) and optional corpus_model.json from encoded sentences
+- **scripts/build_vectors.py** – Build word vectors from graph for optional vector geometry (requires graph.json; optional scipy for SVD)
+- **anchor/graph_vectors.py** – Load word vectors and boost sentence visits by query–sentence similarity when use_graph_vectors is true
+- **anchor/feedback.py** – Record accept/reject feedback; load feedback_weights and boost sentence visits for adaptation
+- **scripts/build_feedback_weights.py** – Build feedback_weights.json from feedback.jsonl (accepted responses) for Graph LLM adaptation

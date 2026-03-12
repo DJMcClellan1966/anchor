@@ -70,6 +70,8 @@ def get_engine() -> Any | None:
 def get_generator_kind() -> str:
     """Return 'stub' | 'graph_attention' | 'corpus' | 'scratchllm' | 'align' based on config and paths."""
     cfg = get_config()
+    if cfg.get("use_scratchllm", False) and cfg.get("scratchllm_path") and Path(cfg["scratchllm_path"]).exists():
+        return "scratchllm"
     if cfg.get("use_corpus_graph", True) and cfg.get("align_data_dir"):
         data_path = Path(cfg["align_data_dir"])
         if (data_path / "corpus" / "graph.json").exists():

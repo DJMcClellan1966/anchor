@@ -30,7 +30,7 @@ class TestGenerateStub:
         out = generate(
             "q",
             {"terms": [], "definitions": {"x": "Definition of x."}},
-            [], {},
+            [], {"include_definitions_in_response": True},
             generator_kind="stub"
         )
         assert "x" in out and "Definition" in out
@@ -39,10 +39,30 @@ class TestGenerateStub:
         out = generate(
             "q",
             {"terms": [], "definitions": {"y": ["first", "second"]}},
-            [], {},
+            [], {"include_definitions_in_response": True},
             generator_kind="stub"
         )
         assert "first" in out
+
+    def test_stub_answer_style_when_definitions_disabled(self):
+        """When include_definitions_in_response is false, no term: definition lines; may include style_sentences."""
+        config = {"include_definitions_in_response": False}
+        out = generate(
+            "q", {"terms": ["alpha", "beta"], "definitions": {"alpha": "Def A."}},
+            ["First style sentence.", "Second."], config, generator_kind="stub"
+        )
+        assert "alpha" in out or "beta" in out
+        assert "Def A." not in out
+        assert "Related:" in out or "First style" in out
+
+    def test_stub_definition_style_when_definitions_enabled(self):
+        """When include_definitions_in_response is true, definition lines present."""
+        config = {"include_definitions_in_response": True}
+        out = generate(
+            "q", {"terms": ["x"], "definitions": {"x": "Definition of x."}},
+            [], config, generator_kind="stub"
+        )
+        assert "x" in out and "Definition" in out
 
 
 class TestGenerateCorpusFallback:
@@ -108,5 +128,31 @@ class TestGenerateCorpusFallback:
         out = generate(
             "q", {"terms": ["x"], "definitions": {"x": "Def of x."}},
             [], config, generator_kind="graph_attention"
+        )
+        assert "x" in out or "Def" in out
+
+    def test_scratchllm_missing_path_falls_back_to_stub(self):
+        config = {"scratchllm_path": None}
+        out = generate(
+            "q", {"terms": ["x"], "definitions": {"x": "Def of x."}},
+            [], config, generator_kind="scratchllm"
+        )
+        assert "x" in out or "Def" in out
+
+    def test_scratchllm_nonexistent_path_falls_back_to_stub(self, tmp_path: Path):
+        config = {"scratchllm_path": str(tmp_path / "nonexistent_scratchllm")}
+        out = generate(
+            "q", {"terms": ["x"], "definitions": {"x": "Def of x."}},
+            [], config, generator_kind="scratchllm"
+        )
+        assert "x" in out or "Def" in out
+
+    def test_scratchllm_import_failure_falls_back_to_stub(self, tmp_path: Path):
+        """When scratchllm_path exists but base.retrieve is not there, fall back to stub."""
+        (tmp_path / "base").mkdir(parents=True, exist_ok=True)
+        config = {"scratchllm_path": str(tmp_path)}
+        out = generate(
+            "q", {"terms": ["x"], "definitions": {"x": "Def of x."}},
+            [], config, generator_kind="scratchllm"
         )
         assert "x" in out or "Def" in out
