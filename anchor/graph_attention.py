@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import random
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .corpus_graph import CorpusGraph, load_corpus_graph
 from .corpus_vocab import load_vocab, tokenize
@@ -50,6 +50,24 @@ def _sentence_ids_for_word(
     if active_categories is not None and graph.has_category_data():
         return graph.sentences_containing_word_in_categories(word_id, active_categories)
     return graph.sentences_containing_word(word_id)
+
+
+def _make_sentence_ok(
+    encoded_index: dict[int, dict[str, Any]] | None,
+    genre_id: str | list[str] | None,
+) -> Callable[[int], bool]:
+    """Return a predicate sentence_ok(sid) for genre filtering."""
+    allowed_genres: set[str] = set()
+    if genre_id is not None:
+        allowed_genres = {genre_id} if isinstance(genre_id, str) else set(genre_id)
+
+    def sentence_ok(sid: int) -> bool:
+        if encoded_index is None or not allowed_genres:
+            return True
+        rec = encoded_index.get(sid) if encoded_index else None
+        return rec is not None and rec.get("genre_id") in allowed_genres
+
+    return sentence_ok
 
 
 def activate(
@@ -157,15 +175,7 @@ def propagation_layer(
     Optional: Co(w) word->word, P_prev backward word->word, content-dependent J reweight, overlay boosts.
     Returns new visit dicts (additive update from current state).
     """
-    allowed_genres: set[str] = set()
-    if genre_id is not None:
-        allowed_genres = {genre_id} if isinstance(genre_id, str) else set(genre_id)
-
-    def sentence_ok(sid: int) -> bool:
-        if encoded_index is None or not allowed_genres:
-            return True
-        rec = encoded_index.get(sid)
-        return rec is not None and rec.get("genre_id") in allowed_genres
+    sentence_ok = _make_sentence_ok(encoded_index, genre_id)
 
     w_copy = dict(v_W)
     s_copy = dict(v_S)
@@ -425,55 +435,25 @@ def traverse_loops(
     as weighted visit counts. Genre filter applied when encoded_index and genre_id
     are provided. When use_weights is True: word/sentence contributions are
     normalized by sentence length; word->word propagation uses next_word_counts.
+    Delegates to run_layers with no cooccurrence/backward/overlay.
     """
-    word_visits: dict[int, float] = {wid: 1.0 for wid in activated_word_ids}
-    sentence_visits: dict[int, float] = {sid: 1.0 for sid in activated_sentence_ids}
-
-    allowed_genres: set[str] = set()
-    if genre_id is not None:
-        allowed_genres = {genre_id} if isinstance(genre_id, str) else set(genre_id)
-
-    def sentence_ok(sid: int) -> bool:
-        if encoded_index is None or not allowed_genres:
-            return True
-        rec = encoded_index.get(sid)
-        return rec is not None and rec.get("genre_id") in allowed_genres
-
-    for _ in range(max(0, num_hops - 1)):
-        w_copy = dict(word_visits)
-        s_copy = dict(sentence_visits)
-        # Word -> sentence: weight by 1/len(sentence) when use_weights
-        for word_id, weight in w_copy.items():
-            for sid in _sentence_ids_for_word(graph, word_id, active_categories):
-                if not sentence_ok(sid):
-                    continue
-                tokens = graph.sentence_token_ids(sid)
-                add = weight / len(tokens) if use_weights and tokens else weight
-                sentence_visits[sid] = sentence_visits.get(sid, 0.0) + add
-        # Sentence -> sentence (Jaccard) and sentence -> word
-        for sentence_id, weight in s_copy.items():
-            if not sentence_ok(sentence_id):
-                continue
-            for sid2, jaccard in graph.similar_sentences(sentence_id, top_k=10):
-                if sentence_ok(sid2):
-                    sentence_visits[sid2] = sentence_visits.get(sid2, 0.0) + weight * jaccard
-            tokens = graph.sentence_token_ids(sentence_id)
-            per_word = (weight / len(tokens)) if use_weights and tokens else weight
-            for wid in tokens:
-                word_visits[wid] = word_visits.get(wid, 0.0) + per_word
-        # Word -> word (next-token style): spread by next_word_counts
-        if use_weights:
-            for word_id, mass in w_copy.items():
-                next_counts = graph.next_word_counts(word_id)
-                if not next_counts:
-                    continue
-                total = sum(next_counts.values())
-                if total <= 0:
-                    continue
-                for next_id, count in next_counts.items():
-                    word_visits[next_id] = word_visits.get(next_id, 0.0) + mass * (count / total)
-
-    return word_visits, sentence_visits
+    v_W_0 = {wid: 1.0 for wid in activated_word_ids}
+    v_S_0 = {sid: 1.0 for sid in activated_sentence_ids}
+    return run_layers(
+        v_W_0,
+        v_S_0,
+        graph,
+        num_hops=num_hops,
+        normalize=False,
+        genre_id=genre_id,
+        encoded_index=encoded_index,
+        use_weights=use_weights,
+        use_cooccurrence=False,
+        use_backward=False,
+        content_dependent_j=False,
+        overlay=None,
+        active_categories=active_categories,
+    )
 
 
 def detect_pattern(

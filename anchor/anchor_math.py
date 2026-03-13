@@ -32,13 +32,14 @@ class AnchorMath:
         self.id_to_word = id_to_word
         self.encoded_index = encoded_index or {}
         self.concept_bundle = concept_bundle or {}
+        self._V: set[int] = set(word_to_id.values())
 
     # --- Vocabulary (τ, V) ---
 
     @property
     def V(self) -> set[int]:
         """V = set of word IDs (vocabulary)."""
-        return set(self.word_to_id.values())
+        return self._V
 
     def tau(self, w: str) -> int | None:
         """τ(w): word string → word ID. Returns None if not in vocab."""

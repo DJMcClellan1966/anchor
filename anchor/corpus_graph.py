@@ -270,18 +270,6 @@ class CorpusGraph:
             if self._sentence_to_categories.get(sid, set()) & category_set
         ]
 
-    def sentences_containing_word_in_categories(
-        self, word_id: int, category_set: set[int]
-    ) -> list[int]:
-        """Sentence IDs that contain this word and have at least one word in category_set."""
-        sids = self.sentences_containing_word(word_id)
-        if not self._sentence_to_categories or not category_set:
-            return sids
-        return [
-            sid for sid in sids
-            if self._sentence_to_categories.get(sid, set()) & category_set
-        ]
-
     def similar_sentences(self, sentence_id: int, top_k: int = 10) -> list[tuple[int, float]]:
         """Return (sentence_id, jaccard) for sentences similar to the given one."""
         pairs = self._sentence_similar.get(sentence_id, [])[:top_k]
