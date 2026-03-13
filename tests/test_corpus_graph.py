@@ -17,6 +17,7 @@ from anchor.corpus_graph import (
     load_corpus_graph,
     load_graph,
     save_graph,
+    stationary_distribution,
 )
 
 
@@ -261,6 +262,22 @@ class TestCorpusGraph:
         assert cg.next_word_counts_in_sentence(1, 2) == {5: 1}
         # Unknown sentence
         assert cg.next_word_counts_in_sentence(99, 2) == {}
+
+
+class TestStationaryDistribution:
+    def test_stationary_distribution_sums_to_one_and_non_negative(self):
+        """π from Markov P: sum ≈ 1, all values non-negative."""
+        data = {
+            "sentence_words": {"0": [1, 2], "1": [2, 3], "2": [1, 3]},
+            "word_cooccurrence": {},
+            "word_next": {"1": {2: 2}, "2": {3: 1, 1: 1}, "3": {1: 1}},
+            "sentence_similar": {},
+        }
+        graph = CorpusGraph(data)
+        pi = stationary_distribution(graph, max_iters=50)
+        assert len(pi) == 3
+        assert all(v >= 0 for v in pi.values())
+        assert abs(sum(pi.values()) - 1.0) < 1e-5
 
 
 class TestLoadCorpusGraph:

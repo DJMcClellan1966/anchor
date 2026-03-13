@@ -12,9 +12,11 @@ import random
 from pathlib import Path
 from typing import Any, Callable
 
-from .corpus_graph import CorpusGraph, load_corpus_graph
+from .corpus_graph import CorpusGraph, load_corpus_graph, stationary_distribution
 from .corpus_vocab import load_vocab, tokenize
 from . import retrieval
+
+_stationary_cache: dict[str, dict[int, float]] = {}
 
 
 def _load_encoded_index(encoded_path: Path) -> dict[int, dict[str, Any]]:
@@ -110,6 +112,22 @@ def normalize_visit_dict(d: dict[int, float]) -> dict[int, float]:
     if total <= 0:
         return d
     return {k: v / total for k, v in d.items()}
+
+
+def entropy_of_distribution(p: dict[int, float]) -> float:
+    """Entropy H(p) = -sum p[x] log(p[x]) for the distribution p. Returns 0 if empty."""
+    import math
+    if not p:
+        return 0.0
+    total = sum(p.values())
+    if total <= 0:
+        return 0.0
+    h = 0.0
+    for v in p.values():
+        if v > 0:
+            q = v / total
+            h -= q * math.log(q)
+    return h
 
 
 def embed_anchor(
@@ -802,19 +820,25 @@ def run(
     engine: Any,
     config: dict[str, Any],
     data_path: Path | None = None,
-) -> str | None:
+    concept_bundle: dict[str, Any] | None = None,
+) -> tuple[str, dict[str, Any]] | None:
     """
-    Entrypoint: get concept bundle, load graph/vocab/encoded index, activate,
-    traverse (with optional weights and max_iter), detect pattern (+ secondary),
-    optionally next_span, refine answer. Returns response text or None if data missing.
-    If engine is None, uses wire.get_engine() so generator can call without passing engine.
+    Entrypoint: load graph/vocab/encoded index, activate, traverse, pattern, refine.
+    Returns (response_text, run_extras) or None if data missing.
+    If concept_bundle is not provided, fetches it via get_concept_bundle(engine, query).
+    If engine is None, uses wire.get_engine() when concept_bundle must be fetched.
     """
     if not data_path or not data_path.exists():
         return None
-    if engine is None:
-        from . import wire
-        engine = wire.get_engine()
-    concept_bundle = retrieval.get_concept_bundle(engine, query)
+    if concept_bundle is None:
+        if engine is None:
+            from . import wire
+            engine = wire.get_engine()
+        concept_bundle = retrieval.get_concept_bundle(engine, query)
+    else:
+        if engine is None:
+            from . import wire
+            engine = wire.get_engine()
     cached = None
     try:
         from .corpus_cache import get_cached_corpus_data
@@ -860,9 +884,10 @@ def run(
 
     use_autoregressive = config.get("use_autoregressive_generation", False)
     if use_autoregressive:
-        return generate_autoregressive(
+        result = generate_autoregressive(
             query, concept_bundle, config, graph, word_to_id, id_to_word, encoded_index, genre_id
         )
+        return (result, {}) if result is not None else None
 
     # One-shot path: refactored embed -> run_layers (with optional norm) -> pattern -> refine
     use_normalized_layers = config.get("use_normalized_layers", True)
@@ -900,6 +925,20 @@ def run(
         use_definition_words=use_def_words, definition_word_weight=def_weight,
         active_categories=active_categories,
     )
+    use_stationary_boost = config.get("use_stationary_boost", False)
+    if use_stationary_boost and data_path:
+        cache_key = str(data_path)
+        if cache_key not in _stationary_cache:
+            _stationary_cache[cache_key] = stationary_distribution(graph)
+        pi = _stationary_cache[cache_key]
+        if pi:
+            top_k_pi = int(config.get("stationary_boost_top_k", 10))
+            alpha = float(config.get("stationary_boost_alpha", 0.3))
+            sorted_pi = sorted(pi.items(), key=lambda x: -x[1])[:top_k_pi]
+            for wid, mass in sorted_pi:
+                v_W_0[wid] = v_W_0.get(wid, 0) + alpha * mass
+                for sid in graph.sentences_containing_word(wid):
+                    v_S_0[sid] = v_S_0.get(sid, 0) + alpha * mass
     word_visits: dict[int, float] = {}
     sentence_visits: dict[int, float] = {}
     for _ in range(max_iter):
@@ -984,19 +1023,71 @@ def run(
     output_format = config.get("attention_loop_output_format", "list")
     paragraph_max_chars = int(config.get("attention_loop_paragraph_max_chars", 500))
     include_definitions = config.get("include_definitions_in_response", False)
+    use_citation = config.get("use_citation", False)
+    use_entropy_confidence = config.get("use_entropy_confidence", False)
+    use_attention_in_extras = config.get("use_attention_in_extras", False)
+    use_critic_loop = config.get("use_critic_loop", False)
+    run_extras: dict[str, Any] = {}
 
-    return refine_answer(
-        pattern_word_ids,
-        pattern_sentence_ids,
-        concept_bundle,
-        encoded_index,
-        id_to_word,
-        genre_id=genre_id,
-        secondary_word_ids=secondary_word_ids,
-        secondary_sentence_ids=secondary_sentence_ids,
-        next_span_sentence_ids=next_span_ids,
-        sentence_visits=sentence_visits,
-        output_format=output_format,
-        paragraph_max_chars=paragraph_max_chars,
-        include_definitions=include_definitions,
-    )
+    def _refine(visits: dict[int, float] | None = None) -> str | tuple[str, list[dict[str, Any]]]:
+        sv = visits if visits is not None else sentence_visits
+        return refine_answer(
+            pattern_word_ids,
+            pattern_sentence_ids,
+            concept_bundle,
+            encoded_index,
+            id_to_word,
+            genre_id=genre_id,
+            secondary_word_ids=secondary_word_ids,
+            secondary_sentence_ids=secondary_sentence_ids,
+            next_span_sentence_ids=next_span_ids,
+            sentence_visits=sv,
+            output_format=output_format,
+            paragraph_max_chars=paragraph_max_chars,
+            include_definitions=include_definitions,
+            return_sources=use_citation,
+        )
+
+    refine_result = _refine()
+    if use_citation and isinstance(refine_result, tuple):
+        response_text, source_records = refine_result
+    else:
+        response_text = refine_result if isinstance(refine_result, str) else ""
+        source_records = []
+
+    if use_critic_loop and engine is not None and response_text:
+        from . import critic
+        crit = critic.score_and_decide(response_text, engine, config)
+        decision = crit.get("decision", "accept")
+        score = crit.get("score", 0.0)
+        accept_threshold = float(config.get("critic_accept_threshold", 0.25))
+        max_loop = int(config.get("critic_loop_max_iters", 2))
+        if (decision == "reject" or score < accept_threshold) and max_loop > 0:
+            grounded = critic.terms_in_graph(concept_bundle.get("terms") or [], engine)
+            if grounded:
+                boost = float(config.get("critic_loop_boost", 0.5))
+                sentence_visits_boosted = dict(sentence_visits)
+                for sid, v in sentence_visits_boosted.items():
+                    rec = encoded_index.get(sid) or {}
+                    term = rec.get("term")
+                    text = (rec.get("text") or "") or ""
+                    if term in grounded or any(t in text for t in grounded):
+                        sentence_visits_boosted[sid] = v * (1.0 + boost)
+                refine_second = _refine(sentence_visits_boosted)
+                if use_citation and isinstance(refine_second, tuple):
+                    response_text, source_records = refine_second
+                else:
+                    response_text = refine_second if isinstance(refine_second, str) else response_text
+
+    if use_entropy_confidence and word_visits:
+        p_norm = normalize_visit_dict(word_visits)
+        h = entropy_of_distribution(p_norm)
+        run_extras["output_entropy"] = h
+        run_extras["confidence"] = 1.0 / (1.0 + h)
+    if use_citation:
+        run_extras["source_records"] = source_records
+    if use_attention_in_extras:
+        run_extras["word_visits"] = dict(word_visits)
+        run_extras["sentence_visits"] = dict(sentence_visits)
+
+    return (response_text, run_extras)

@@ -243,6 +243,16 @@ When the required paths/data exist, these are used automatically. Set to `false`
 | `use_sentence_mixture_output` | `true` | When true (default, autoregressive only), next-token distribution blends v_W-based output with v_S-weighted per-sentence bigram mixture (simplified LLM-corpus model) |
 | `sentence_mixture_weight` | `0.5` | Blend weight α for sentence mixture when `use_sentence_mixture_output` is true: p = (1−α) p_base + α p_mix |
 
+### Performance and simple mode
+
+If the app feels slow or stays on "thinking" for simple queries, the usual cause is **too much work per query**. Defaults are now tuned for faster simple responses:
+
+- **Fixed propagation steps:** `propagation_converge_tol` is `null` by default, so the graph runs a fixed number of steps (`attention_loop_hops - 1`) instead of iterating until convergence (which could run up to 50 steps on large graphs).
+- **Lighter propagation:** `use_propagation_cooccurrence`, `use_propagation_backward`, and `use_content_dependent_j` are `false` by default, so each step does less work. Set them to `true` in config for richer propagation at the cost of speed.
+- **Concept bundle is not fetched twice:** the engine fetches the concept bundle once and passes it into the generator/graph path, so the dictionary is only queried once per request.
+
+For even faster responses you can lower `attention_loop_hops` to `2` (one propagation step) in **config/anchor.json**; answers may be shorter or less refined. Optional features that add work when enabled: `use_stationary_boost`, `use_critic_loop`, `use_naturalize`, `use_graph_vectors` (if word_vectors.json exists). The corpus cache (graph, vocab, encoded index) is reused across queries in the same session.
+
 ## Config
 
 - **config/paths.json** – `dictionary_path`, `webster_json_path` (optional; Webster JSON overrides Basis when set), `scratchllm_path`, `align_data_dir`

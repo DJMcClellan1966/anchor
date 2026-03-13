@@ -49,11 +49,15 @@ def _generate_graph_attention(
     if not (data_path / "corpus" / "graph.json").exists() or not (data_path / "corpus" / "vocab.json").exists():
         stub = _generate_stub(question, concept_bundle, style_sentences, config)
         return (stub, {"generator_actually_used": "stub", "fallback_reason": fallback_reason})
-    out = graph_attention.run(question, None, config, data_path)
-    if out is None or not (out or "").strip():
+    result = graph_attention.run(question, None, config, data_path, concept_bundle=concept_bundle)
+    if result is None:
         stub = _generate_stub(question, concept_bundle, style_sentences, config)
         return (stub, {"generator_actually_used": "stub", "fallback_reason": fallback_reason})
-    # Success: compute graph_sentences and vocab_size
+    out, run_extras = result if isinstance(result, tuple) else (result, {})
+    if not (out or "").strip():
+        stub = _generate_stub(question, concept_bundle, style_sentences, config)
+        return (stub, {"generator_actually_used": "stub", "fallback_reason": fallback_reason})
+    # Success: compute graph_sentences and vocab_size, merge run_extras
     graph_sentences = 0
     vocab_size = 0
     try:
@@ -71,15 +75,14 @@ def _generate_graph_attention(
     except Exception:
         pass
     generation_mode = "autoregressive" if config.get("use_autoregressive_generation", False) else "one_shot"
-    return (
-        out.strip(),
-        {
-            "generator_actually_used": "graph_attention",
-            "generation_mode": generation_mode,
-            "graph_sentences": graph_sentences,
-            "vocab_size": vocab_size,
-        },
-    )
+    gen_meta = {
+        "generator_actually_used": "graph_attention",
+        "generation_mode": generation_mode,
+        "graph_sentences": graph_sentences,
+        "vocab_size": vocab_size,
+    }
+    gen_meta.update(run_extras)
+    return (out.strip(), gen_meta)
 
 
 def _generate_corpus(

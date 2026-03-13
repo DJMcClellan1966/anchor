@@ -333,6 +333,54 @@ def load_corpus_graph(data_dir: Path, graph_path: str = "corpus/graph.json") -> 
     return CorpusGraph(data)
 
 
+def stationary_distribution(
+    graph: CorpusGraph,
+    max_iters: int = 100,
+    tol: float = 1e-6,
+) -> dict[int, float]:
+    """
+    Compute stationary distribution π of the Markov chain P from next_word_counts.
+    π = π P via power iteration. Returns dict word_id -> mass (sum ≈ 1).
+    """
+    V: set[int] = set()
+    for sid in graph.sentence_ids():
+        V.update(graph.sentence_token_ids(sid))
+    if not V:
+        return {}
+    V_list = sorted(V)
+    n = len(V_list)
+    wid_to_idx = {wid: i for i, wid in enumerate(V_list)}
+
+    # Build row-stochastic P as list of dicts (idx -> prob)
+    P: list[dict[int, float]] = [{} for _ in range(n)]
+    for i, w in enumerate(V_list):
+        next_counts = graph.next_word_counts(w)
+        total = sum(next_counts.values())
+        if total > 0:
+            for w_next, c in next_counts.items():
+                if w_next in wid_to_idx:
+                    j = wid_to_idx[w_next]
+                    P[i][j] = P[i].get(j, 0) + c / total
+        else:
+            P[i][i] = 1.0
+
+    # Power iteration: π (row vector) * P
+    pi = [1.0 / n] * n
+    for _ in range(max_iters):
+        pi_new = [0.0] * n
+        for i in range(n):
+            for j, p_ij in P[i].items():
+                pi_new[j] += pi[i] * p_ij
+        total = sum(pi_new)
+        if total > 0:
+            pi_new = [x / total for x in pi_new]
+        diff = sum(abs(pi_new[i] - pi[i]) for i in range(n))
+        pi = pi_new
+        if diff < tol:
+            break
+    return {V_list[i]: pi[i] for i in range(n)}
+
+
 def build_transition_matrix(
     word_next: dict[int, dict[int, int]],
     vocab_size: int,

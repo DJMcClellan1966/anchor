@@ -673,8 +673,9 @@ class TestRun:
             "attention_loop_path_groups": 2,
             "attention_loop_next_span": True,
         }
-        out = graph_attention.run("hello", MockEngine(), config, tmp_path)
-        assert out is not None
+        result = graph_attention.run("hello", MockEngine(), config, tmp_path)
+        assert result is not None
+        out, _ = result
         assert out.strip()
         assert "greeting" in out or "Hello world" in out or "hello" in out
 
@@ -717,8 +718,9 @@ class TestRun:
             "attention_loop_path_groups": 2,
             "attention_loop_next_span": True,
         }
-        out = graph_attention.run("hello", MockEngineEmptyTerms(), config, tmp_path)
-        assert out is not None
+        result = graph_attention.run("hello", MockEngineEmptyTerms(), config, tmp_path)
+        assert result is not None
+        out, _ = result
         assert "hello" in out.lower() or "Hello" in out
 
     def test_run_with_use_query_token_ids_false_uses_only_terms(self, tmp_path: Path):
@@ -760,8 +762,9 @@ class TestRun:
             "attention_loop_path_groups": 2,
             "attention_loop_next_span": True,
         }
-        out = graph_attention.run("hello", MockEngineWithTerms(), config, tmp_path)
-        assert out is not None
+        result = graph_attention.run("hello", MockEngineWithTerms(), config, tmp_path)
+        assert result is not None
+        out, _ = result
         assert out.strip()
 
     def test_run_with_use_autoregressive_generation_returns_string(self, tmp_path: Path):
@@ -804,7 +807,108 @@ class TestRun:
             "attention_loop_use_weights": True,
             "use_normalized_layers": True,
         }
-        out = graph_attention.run("hello", MockEngine(), config, tmp_path)
-        assert out is not None
+        result = graph_attention.run("hello", MockEngine(), config, tmp_path)
+        assert result is not None
+        out, _ = result
         assert isinstance(out, str)
         assert out.strip()
+
+    def test_entropy_of_distribution_uniform_higher_than_peaked(self):
+        """Entropy of uniform distribution > entropy of peaked distribution."""
+        h_uniform = graph_attention.entropy_of_distribution({1: 0.5, 2: 0.5})
+        h_peaked = graph_attention.entropy_of_distribution({1: 1.0})
+        assert h_uniform > h_peaked
+        assert h_peaked == 0.0
+
+    def test_run_returns_tuple_with_run_extras(self, tmp_path: Path):
+        """run() returns (response_text, run_extras) where run_extras is a dict."""
+        corpus = tmp_path / "corpus"
+        corpus.mkdir(exist_ok=True)
+        with open(corpus / "vocab.json", "w", encoding="utf-8") as f:
+            json.dump({"word_to_id": {"a": 0, "b": 1}, "id_to_word": {"0": "a", "1": "b"}}, f)
+        with open(corpus / "encoded_sentences.jsonl", "w", encoding="utf-8") as f:
+            f.write(json.dumps({"sentence_id": 0, "genre_id": "general", "text": "A b.", "token_ids": [0, 1]}) + "\n")
+        with open(corpus / "graph.json", "w", encoding="utf-8") as f:
+            json.dump({
+                "sentence_words": {"0": [0, 1]},
+                "word_cooccurrence": {"0": [1], "1": [0]},
+                "word_next": {"0": {"1": 1}},
+                "sentence_similar": {"0": []},
+            }, f)
+        class MockEngine:
+            @staticmethod
+            def get_context_for_description(q):
+                return {"concepts": [], "definitions": {}}
+        config = {"default_genre_id": "general", "attention_loop_hops": 2, "attention_loop_top_k": 5}
+        result = graph_attention.run("a", MockEngine(), config, tmp_path)
+        assert result is not None
+        out, run_extras = result
+        assert isinstance(out, str)
+        assert isinstance(run_extras, dict)
+
+    def test_run_use_citation_includes_source_records(self, tmp_path: Path):
+        """With use_citation true, run_extras contains source_records with sentence/definition types."""
+        corpus = tmp_path / "corpus"
+        corpus.mkdir(exist_ok=True)
+        with open(corpus / "vocab.json", "w", encoding="utf-8") as f:
+            json.dump({"word_to_id": {"hello": 0}, "id_to_word": {"0": "hello"}}, f)
+        with open(corpus / "encoded_sentences.jsonl", "w", encoding="utf-8") as f:
+            f.write(json.dumps({"sentence_id": 0, "genre_id": "general", "text": "Hello world.", "token_ids": [0]}) + "\n")
+        with open(corpus / "graph.json", "w", encoding="utf-8") as f:
+            json.dump({
+                "sentence_words": {"0": [0]},
+                "word_cooccurrence": {"0": []},
+                "word_next": {},
+                "sentence_similar": {"0": []},
+            }, f)
+        class MockEngine:
+            @staticmethod
+            def get_context_for_description(q):
+                return {"concepts": [{"name": "hello"}], "definitions": {"hello": "A greeting."}}
+        config = {"default_genre_id": "general", "attention_loop_hops": 2, "use_citation": True}
+        result = graph_attention.run("hello", MockEngine(), config, tmp_path)
+        assert result is not None
+        _, run_extras = result
+        assert "source_records" in run_extras
+        assert isinstance(run_extras["source_records"], list)
+
+    def test_run_use_entropy_confidence_includes_entropy_and_confidence(self, tmp_path: Path):
+        """With use_entropy_confidence true, run_extras contains output_entropy and confidence."""
+        corpus = tmp_path / "corpus"
+        corpus.mkdir(exist_ok=True)
+        with open(corpus / "vocab.json", "w", encoding="utf-8") as f:
+            json.dump({"word_to_id": {"x": 0, "y": 1}, "id_to_word": {"0": "x", "1": "y"}}, f)
+        with open(corpus / "encoded_sentences.jsonl", "w", encoding="utf-8") as f:
+            f.write(json.dumps({"sentence_id": 0, "genre_id": "general", "text": "X y.", "token_ids": [0, 1]}) + "\n")
+        with open(corpus / "graph.json", "w", encoding="utf-8") as f:
+            json.dump({
+                "sentence_words": {"0": [0, 1]},
+                "word_cooccurrence": {"0": [1], "1": [0]},
+                "word_next": {"0": {"1": 1}},
+                "sentence_similar": {"0": []},
+            }, f)
+        class MockEngine:
+            @staticmethod
+            def get_context_for_description(q):
+                return {"concepts": [], "definitions": {}}
+        config = {"default_genre_id": "general", "attention_loop_hops": 2, "use_entropy_confidence": True}
+        result = graph_attention.run("x", MockEngine(), config, tmp_path)
+        assert result is not None
+        _, run_extras = result
+        assert "output_entropy" in run_extras
+        assert "confidence" in run_extras
+        assert run_extras["confidence"] > 0
+
+
+class TestProtocols:
+    def test_corpus_graph_satisfies_graph_like(self):
+        """CorpusGraph implements the GraphLike protocol."""
+        from anchor.protocols import GraphLike
+        data = {
+            "sentence_words": {"0": [1, 2], "1": [2, 3]},
+            "word_cooccurrence": {},
+            "word_next": {"1": {"2": 1}, "2": {"3": 1}},
+            "sentence_similar": {"0": [[1, 0.5]], "1": [[0, 0.5]]},
+        }
+        graph = CorpusGraph(data)
+        assert isinstance(graph, GraphLike)
