@@ -240,6 +240,7 @@ Env overrides: `ANCHOR_DICTIONARY_PATH`, `ANCHOR_DATA_DIR`.
 
 - **Math model:** See [docs/UNIFIED_MATH_MODEL.md](docs/UNIFIED_MATH_MODEL.md) for a unified mathematical formulation of the pipeline and a comparison with LLMs.
 - **Data math:** See [docs/ANCHOR_LLM_DATA_MATH.md](docs/ANCHOR_LLM_DATA_MATH.md) for a mathematical definition of Anchor data vs LLM data and a compare-and-contrast.
+- **Theorems:** See [docs/ANCHOR_THEOREMS.md](docs/ANCHOR_THEOREMS.md) for formal theorems (traceability, convergence, information bounds, equivalence, minimal structure) and proofs.
 
 ## Project layout
 
