@@ -25,11 +25,13 @@ def test_run_writes_jsonl_with_genre(tmp_path: Path):
     assert out.exists()
     lines = out.read_text(encoding="utf-8").strip().split("\n")
     assert len(lines) == 2
-    for line in lines:
+    for i, line in enumerate(lines):
         obj = json.loads(line)
         assert obj.get("genre_id") == "definitional"
         assert "text" in obj
         assert ": " in obj["text"]
+        assert obj.get("source") == "dictionary"
+        assert obj.get("term") in ("apple", "banana")
 
 def test_run_append_adds_to_existing(tmp_path: Path):
     corpus_dir = tmp_path / "corpus"

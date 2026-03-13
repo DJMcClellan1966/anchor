@@ -41,7 +41,12 @@ def run(
             continue
         def_trim = definition[:MAX_DEF_LEN] if len(definition) > MAX_DEF_LEN else definition
         text = f"{term}: {def_trim}"
-        lines_out.append(json.dumps({"text": text, "genre_id": genre_id}, ensure_ascii=False))
+        lines_out.append(json.dumps({
+            "text": text,
+            "genre_id": genre_id,
+            "source": "dictionary",
+            "term": term,
+        }, ensure_ascii=False))
         written += 1
     with open(out_path, "w", encoding="utf-8") as f:
         for line in lines_out:

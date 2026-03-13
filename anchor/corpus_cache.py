@@ -31,6 +31,8 @@ def _load_encoded_index(encoded_path: Path) -> dict[int, dict[str, Any]]:
                 index[sid] = {
                     "text": obj.get("text", ""),
                     "genre_id": obj.get("genre_id", "general"),
+                    "source": obj.get("source"),
+                    "term": obj.get("term"),
                 }
             except (json.JSONDecodeError, TypeError):
                 continue

@@ -77,7 +77,10 @@ Use [Webster's English Dictionary (JSON)](https://github.com/matthewreagan/Webst
    python scripts/build_vocab.py data
    python scripts/build_graph.py data
    ```
+   Each line is written with `source: "dictionary"` and `term: "<term>"` so definitions live in the same sequence store as the corpus (unified data store).
 3. **Use definitional content in retrieval** — In **config/anchor.json** set `genre_ids` to include `"definitional"` (e.g. `["retirement", "definitional"]`). Default is both so dictionary and corpus both use Webster.
+
+**Unified data store:** When dictionary is ingested via `build_corpus_from_webster.py`, definition rows are first-class sentences in `sentences.jsonl` (and thus in `encoded_sentences.jsonl` and the graph). Build the graph from that single encoded file only (do not pass `encoded_dictionary.jsonl`; use `--no-encoded-dictionary` if you previously merged a separate encoded dictionary). Refinement then prefers definition text from the encoded index (rows with `term`) over the concept bundle, so dictionary and corpus data live in the same place.
 
 ### Dictionary repo corpus (ConceptNet, GooAQ, 3M+)
 

@@ -257,6 +257,23 @@ class TestRefineAnswer:
         assert "Only corpus sentence" in out
         assert "a: Def" not in out and "Def of a" not in out
 
+    def test_refine_answer_prefers_definition_from_store_when_term_in_encoded_index(self):
+        """Unified store: when encoded_index has a row with term=X, use its text as definition (not concept_bundle)."""
+        concept_bundle = {"terms": ["apple"], "definitions": {"apple": "Fallback from engine."}}
+        id_to_word = {1: "apple"}
+        # Sentence 0 = corpus; sentence 1 = definition row from store (source=dictionary, term=apple)
+        encoded_index = {
+            0: {"text": "Some corpus sentence.", "genre_id": "general"},
+            1: {"text": "apple: A fruit from the store.", "genre_id": "definitional", "source": "dictionary", "term": "apple"},
+        }
+        out = graph_attention.refine_answer(
+            [1], [0], concept_bundle, encoded_index, id_to_word,
+            genre_id="general", max_sentences=5, include_definitions=True,
+        )
+        # Should use store text (unified), not "Fallback from engine"
+        assert "A fruit from the store" in out or "apple: A fruit from the store" in out
+        assert "Fallback from engine" not in out
+
 
 class TestNextSpan:
     def test_next_span_collects_similar_sentences_genre_filtered(self):

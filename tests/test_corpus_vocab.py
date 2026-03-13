@@ -93,6 +93,19 @@ class TestEncodeSentences:
         n = encode_sentences(corpus, w2i, out)
         assert n == 1
 
+    def test_preserves_source_and_term_from_corpus(self, tmp_path):
+        """Unified store: encode_sentences passes through source and term when present."""
+        corpus = tmp_path / "sents.jsonl"
+        out = tmp_path / "encoded.jsonl"
+        with open(corpus, "w", encoding="utf-8") as f:
+            f.write('{"text": "apple: A fruit.", "genre_id": "definitional", "source": "dictionary", "term": "apple"}\n')
+        w2i = {"apple": 0, ":": 1, "A": 2, "fruit": 3, ".": 4}
+        n = encode_sentences(corpus, w2i, out)
+        assert n == 1
+        data = json.loads(next(open(out, encoding="utf-8")))
+        assert data.get("source") == "dictionary"
+        assert data.get("term") == "apple"
+
 
 class TestLoadVocab:
     def test_missing_file(self, tmp_path):

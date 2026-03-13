@@ -33,6 +33,8 @@ def _load_encoded_index(encoded_path: Path) -> dict[int, dict[str, Any]]:
                 index[sid] = {
                     "text": obj.get("text", ""),
                     "genre_id": obj.get("genre_id", "general"),
+                    "source": obj.get("source"),
+                    "term": obj.get("term"),
                 }
             except (json.JSONDecodeError, TypeError):
                 continue
@@ -446,6 +448,12 @@ def refine_answer(
     """
     terms_set = set((concept_bundle.get("terms") or []))
     definitions = concept_bundle.get("definitions") or {}
+    # Definition-from-store: term -> sentence_id for rows with "term" (unified store)
+    term_to_sid: dict[str, int] = {}
+    for sid, rec in encoded_index.items():
+        t = rec.get("term")
+        if t:
+            term_to_sid[str(t)] = sid
     parts: list[str] = []
     seen_defs: set[str] = set()
     max_total = max_definitions + max_sentences
@@ -455,6 +463,13 @@ def refine_answer(
         if term is None or term not in terms_set or term in seen_defs:
             return False
         seen_defs.add(term)
+        # Prefer definition from unified store (encoded index row with term=term)
+        if term in term_to_sid:
+            rec = encoded_index.get(term_to_sid[term], {})
+            text = rec.get("text")
+            if isinstance(text, str) and text.strip():
+                parts.append(text.strip()[:500])
+                return True
         defn = definitions.get(term)
         if isinstance(defn, str) and defn.strip():
             parts.append(f"{term}: {defn.strip()[:500]}")

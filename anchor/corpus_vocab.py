@@ -107,6 +107,11 @@ def encode_sentences(
                     "token_ids": token_ids,
                     "text": text,
                 }
+                if isinstance(obj, dict):
+                    if "source" in obj:
+                        out["source"] = obj["source"]
+                    if "term" in obj:
+                        out["term"] = obj["term"]
                 fout.write(json.dumps(out, ensure_ascii=False) + "\n")
                 count += 1
             except (json.JSONDecodeError, TypeError):
