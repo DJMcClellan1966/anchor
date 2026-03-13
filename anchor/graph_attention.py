@@ -107,14 +107,15 @@ def embed_anchor(
         for term, defn in definitions.items():
             if not defn:
                 continue
-            text = defn[0] if isinstance(defn, list) and defn and isinstance(defn[0], str) else (defn if isinstance(defn, str) else "")
-            if not isinstance(text, str) or not text.strip():
-                continue
-            for t in tokenize(text.strip()):
-                if t not in word_to_id:
+            texts = defn if isinstance(defn, list) else [defn]
+            for text in texts:
+                if not isinstance(text, str) or not text.strip():
                     continue
-                wid = word_to_id[t]
-                v_W_0[wid] = v_W_0.get(wid, 0.0) + definition_word_weight
+                for t in tokenize(text.strip()):
+                    if t not in word_to_id:
+                        continue
+                    wid = word_to_id[t]
+                    v_W_0[wid] = v_W_0.get(wid, 0.0) + definition_word_weight
         if v_W_0 and activated_sentence_ids:
             for wid in v_W_0:
                 if wid not in activated_word_ids and wid not in (query_token_ids or []):
@@ -461,24 +462,32 @@ def refine_answer(
     output_format: str = "list",
     paragraph_max_chars: int = 500,
     include_definitions: bool = True,
-) -> str:
+    return_sources: bool = False,
+    **kwargs: Any,
+) -> str | tuple[str, list[dict[str, Any]]]:
     """
     Build response from pattern: definitions for pattern keywords (from concept_bundle)
-    and sentence texts (from encoded index, genre-filtered). Sentences are ordered by
-    sentence_visits (desc) when provided; then secondary and next_span (genre-filtered, deduped).
+    and sentence texts (from encoded index, genre-filtered). When multiple definitions
+    exist per term (senses), picks the sentence_id with highest sentence_visits, else first.
+    Sentences are ordered by sentence_visits (desc) when provided; then secondary and next_span.
     output_format "list" = newline-separated; "paragraph" = definitions then one fused paragraph.
     When include_definitions is False, only corpus sentences are included (LLM-like answer).
-    Grounded only.
+    When return_sources is True, returns (y, source_records) where each record is
+    {"type": "definition", "term": str} or {"type": "sentence", "sentence_id": int}. Grounded only.
     """
     terms_set = set((concept_bundle.get("terms") or []))
     definitions = concept_bundle.get("definitions") or {}
-    # Definition-from-store: term -> sentence_id for rows with "term" (unified store)
-    term_to_sid: dict[str, int] = {}
+    # Definition-from-store: term -> list of sentence_ids (one per sense in unified store)
+    term_to_sids: dict[str, list[int]] = {}
     for sid, rec in encoded_index.items():
         t = rec.get("term")
         if t:
-            term_to_sid[str(t)] = sid
+            key = str(t)
+            if key not in term_to_sids:
+                term_to_sids[key] = []
+            term_to_sids[key].append(sid)
     parts: list[str] = []
+    source_records: list[dict[str, Any]] = []  # built when return_sources is True
     seen_defs: set[str] = set()
     max_total = max_definitions + max_sentences
 
@@ -487,19 +496,30 @@ def refine_answer(
         if term is None or term not in terms_set or term in seen_defs:
             return False
         seen_defs.add(term)
-        # Prefer definition from unified store (encoded index row with term=term)
-        if term in term_to_sid:
-            rec = encoded_index.get(term_to_sid[term], {})
+        # Prefer definition from unified store: pick one sid by sentence_visits or first
+        if term in term_to_sids:
+            sids = term_to_sids[term]
+            if sentence_visits:
+                chosen_sid = max(sids, key=lambda sid: sentence_visits.get(sid, 0.0))
+            else:
+                chosen_sid = sids[0]
+            rec = encoded_index.get(chosen_sid, {})
             text = rec.get("text")
             if isinstance(text, str) and text.strip():
                 parts.append(text.strip()[:500])
+                if return_sources:
+                    source_records.append({"type": "definition", "term": term})
                 return True
         defn = definitions.get(term)
         if isinstance(defn, str) and defn.strip():
             parts.append(f"{term}: {defn.strip()[:500]}")
+            if return_sources:
+                source_records.append({"type": "definition", "term": term})
             return True
         if isinstance(defn, list) and defn and isinstance(defn[0], str):
             parts.append(f"{term}: {defn[0].strip()[:500]}")
+            if return_sources:
+                source_records.append({"type": "definition", "term": term})
             return True
         return False
 
@@ -532,10 +552,10 @@ def refine_answer(
         all_sids.sort(key=lambda sid: -sentence_visits.get(sid, 0.0))
 
     seen_sents: set[str] = set()
-    sentence_texts: list[str] = []
+    sentence_items: list[tuple[int, str]] = []  # (sid, text) for source attribution
     sent_allowed = {genre_id} if isinstance(genre_id, str) else set(genre_id)
     for sid in all_sids:
-        if len(sentence_texts) >= max_sentences:
+        if len(sentence_items) >= max_sentences:
             break
         rec = encoded_index.get(sid)
         if not rec or rec.get("genre_id") not in sent_allowed:
@@ -543,26 +563,36 @@ def refine_answer(
         text = (rec.get("text") or "").strip()
         if text and text not in seen_sents:
             seen_sents.add(text)
-            sentence_texts.append(text)
+            sentence_items.append((sid, text))
 
-    if output_format == "paragraph" and sentence_texts:
+    if output_format == "paragraph" and sentence_items:
+        sentence_texts = [t for _, t in sentence_items]
         fused = " ".join(sentence_texts)
         if len(fused) > paragraph_max_chars:
             cut = fused[: paragraph_max_chars - 3]
             last_space = cut.rfind(" ")
             fused = (cut[:last_space] if last_space > 0 else cut) + "..."
         parts.append("In the corpus: " + fused)
+        if return_sources:
+            for sid, _ in sentence_items:
+                source_records.append({"type": "sentence", "sentence_id": sid})
     else:
-        for text in sentence_texts:
+        for sid, text in sentence_items:
             parts.append(text)
+            if return_sources:
+                source_records.append({"type": "sentence", "sentence_id": sid})
             if len(parts) >= max_total:
                 break
 
     if not parts:
-        if terms_set:
-            return "Concepts: " + ", ".join(list(terms_set)[:15])
-        return "No pattern found for this query."
-    return "\n".join(parts[:max_total])
+        msg = "Concepts: " + ", ".join(list(terms_set)[:15]) if terms_set else "No pattern found for this query."
+        if return_sources:
+            return (msg, [])
+        return msg
+    y = "\n".join(parts[:max_total])
+    if return_sources:
+        return (y, source_records)
+    return y
 
 
 def _sample_from_distribution(p: dict[int, float]) -> int | None:

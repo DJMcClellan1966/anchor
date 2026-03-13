@@ -52,3 +52,23 @@ def test_run_append_adds_to_existing(tmp_path: Path):
 def test_run_missing_file_raises(tmp_path: Path):
     with pytest.raises(FileNotFoundError):
         build_webster_run(tmp_path / "missing.json", tmp_path)
+
+
+def test_run_multiple_senses_emits_one_line_per_sense(tmp_path: Path):
+    """When definition is a list of strings (senses), emit one sentence per sense with same term."""
+    webster = tmp_path / "dict.json"
+    webster.write_text(json.dumps({
+        "apple": "A fruit.",
+        "function": ["A relation from inputs to outputs.", "A role or purpose."],
+    }))
+    n = build_webster_run(webster, tmp_path, genre_id="definitional", append=False)
+    assert n == 3  # 1 for apple, 2 for function
+    out = tmp_path / "corpus" / "sentences.jsonl"
+    lines = [json.loads(line) for line in out.read_text(encoding="utf-8").strip().split("\n")]
+    terms = [obj["term"] for obj in lines]
+    assert terms.count("apple") == 1
+    assert terms.count("function") == 2
+    texts = [obj["text"] for obj in lines]
+    assert any("A fruit" in t for t in texts)
+    assert any("relation from inputs" in t for t in texts)
+    assert any("role or purpose" in t for t in texts)

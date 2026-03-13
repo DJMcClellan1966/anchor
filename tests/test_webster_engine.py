@@ -66,3 +66,18 @@ class TestWebsterEngine:
         out = eng.get_context_for_description("ANOPHELES")
         assert "definition_map" in out
         assert "anopheles" in out["definition_map"] or "ANOPHELES" in out["definition_map"]
+
+    def test_list_definition_multiple_senses(self, tmp_path: Path):
+        """Webster JSON value may be a list of strings (multiple senses); pass-through in bundle."""
+        p = tmp_path / "dict.json"
+        p.write_text(json.dumps({
+            "function": ["A relation from inputs to outputs.", "A role or purpose."],
+        }))
+        eng = WebsterEngine(p)
+        out = eng.get_context_for_description("function")
+        assert "definition_map" in out
+        val = out["definition_map"].get("function")
+        assert isinstance(val, list)
+        assert len(val) == 2
+        assert "inputs to outputs" in val[0]
+        assert "role or purpose" in val[1]

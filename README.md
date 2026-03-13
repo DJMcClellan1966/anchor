@@ -82,6 +82,16 @@ Use [Webster's English Dictionary (JSON)](https://github.com/matthewreagan/Webst
 
 **Unified data store:** When dictionary is ingested via `build_corpus_from_webster.py`, definition rows are first-class sentences in `sentences.jsonl` (and thus in `encoded_sentences.jsonl` and the graph). Build the graph from that single encoded file only (do not pass `encoded_dictionary.jsonl`; use `--no-encoded-dictionary` if you previously merged a separate encoded dictionary). Refinement then prefers definition text from the encoded index (rows with `term`) over the concept bundle, so dictionary and corpus data live in the same place.
 
+**Multiple senses:** Webster JSON values may be a single string or a list of strings (one per sense). Each sense is ingested as a separate sentence with the same `term`; propagation can select the most relevant sense by visit score. Refinement picks the sense whose sentence has the highest `sentence_visits` when available.
+
+**Source attribution (Theorem 4):** `refine_answer(..., return_sources=True)` returns `(text, source_records)` where each record is `{"type": "definition", "term": str}` or `{"type": "sentence", "sentence_id": int}`, so every part of the response is traceable to the store.
+
+**Minimal term set:** To get the minimal set of dictionary terms needed for a set of queries (Theorem 5), run:
+```bash
+python scripts/suggest_minimal_terms.py --webster path/to/dictionary.json --queries queries.txt -o terms.txt
+```
+Use `--pruned path/to/pruned.json` to write a Webster JSON containing only those terms.
+
 ### Dictionary repo corpus (ConceptNet, GooAQ, 3M+)
 
 The [dictionary repo](https://github.com/DJMcClellan1966/dictionary) can compile large corpora (ConceptNet ~34M assertions filtered to English, **GooAQ 3M+ Q&A pairs**, The Stack docstrings, Python stdlib). To use that same data in Anchor:
@@ -263,7 +273,8 @@ Env overrides: `ANCHOR_DICTIONARY_PATH`, `ANCHOR_DATA_DIR`.
 - **run_anchor_gui.py** – Tkinter GUI (question + response; Ctrl+Enter to submit)
 - **scripts/build_corpus.py** – Build combined corpus with genre tags (from local files)
 - **scripts/build_corpus_from_hf.py** – Build corpus from Hugging Face datasets (OpenSubtitles, C4, etc.; requires `datasets`)
-- **scripts/build_corpus_from_webster.py** – Ingest Webster dictionary JSON into sentences.jsonl (genre_id e.g. `definitional`); use `--append` to merge with existing corpus
+- **scripts/build_corpus_from_webster.py** – Ingest Webster dictionary JSON into sentences.jsonl (genre_id e.g. `definitional`); supports single string or list of strings per term (senses); use `--append` to merge with existing corpus
+- **scripts/suggest_minimal_terms.py** – Suggest minimal set of terms for a list of queries (Theorem 5); optional `--pruned` to write a pruned Webster JSON
 - **scripts/build_corpus_from_dictionary.py** – Ingest dictionary repo compiled corpora (ConceptNet, GooAQ 3M+, Stack, Stdlib) into sentences.jsonl; use after `compile_corpus.py` in the dictionary repo
 - **scripts/build_vocab.py** – Build vocab and encoded_sentences from corpus
 - **scripts/encode_dictionary.py** – Encode dictionary definitions as token ID sequences (Webster or definitions file); output for build_graph merge

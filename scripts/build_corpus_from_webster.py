@@ -37,17 +37,27 @@ def run(
     for term, definition in data.items():
         if written >= max_lines:
             break
-        if not isinstance(term, str) or not isinstance(definition, str):
+        if not isinstance(term, str):
             continue
-        def_trim = definition[:MAX_DEF_LEN] if len(definition) > MAX_DEF_LEN else definition
-        text = f"{term}: {def_trim}"
-        lines_out.append(json.dumps({
-            "text": text,
-            "genre_id": genre_id,
-            "source": "dictionary",
-            "term": term,
-        }, ensure_ascii=False))
-        written += 1
+        senses: list[str] = []
+        if isinstance(definition, str):
+            senses = [definition]
+        elif isinstance(definition, list) and definition:
+            senses = [s for s in definition if isinstance(s, str)]
+        if not senses:
+            continue
+        for sense in senses:
+            if written >= max_lines:
+                break
+            def_trim = sense[:MAX_DEF_LEN] if len(sense) > MAX_DEF_LEN else sense
+            text = f"{term}: {def_trim}"
+            lines_out.append(json.dumps({
+                "text": text,
+                "genre_id": genre_id,
+                "source": "dictionary",
+                "term": term,
+            }, ensure_ascii=False))
+            written += 1
     with open(out_path, "w", encoding="utf-8") as f:
         for line in lines_out:
             f.write(line + "\n")

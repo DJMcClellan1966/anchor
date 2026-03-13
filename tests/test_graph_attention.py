@@ -274,6 +274,51 @@ class TestRefineAnswer:
         assert "A fruit from the store" in out or "apple: A fruit from the store" in out
         assert "Fallback from engine" not in out
 
+    def test_refine_answer_picks_highest_visit_sid_when_multiple_senses(self):
+        """With term_to_sids (multiple sids per term), pick the sid with highest sentence_visits."""
+        concept_bundle = {"terms": ["apple"], "definitions": {"apple": "Fallback."}}
+        id_to_word = {1: "apple"}
+        # Two definition rows for "apple" (two senses): sid 1 has lower visits, sid 2 has higher
+        encoded_index = {
+            0: {"text": "Corpus.", "genre_id": "general"},
+            1: {"text": "apple: A fruit.", "genre_id": "definitional", "source": "dictionary", "term": "apple"},
+            2: {"text": "apple: A tech company.", "genre_id": "definitional", "source": "dictionary", "term": "apple"},
+        }
+        sentence_visits = {0: 1.0, 1: 0.5, 2: 2.0}  # sid 2 has highest
+        out = graph_attention.refine_answer(
+            [1], [0], concept_bundle, encoded_index, id_to_word,
+            genre_id="general", max_sentences=5, include_definitions=True,
+            sentence_visits=sentence_visits,
+        )
+        # Should pick sid 2 (highest visit) for definition text
+        assert "A tech company" in out
+        assert "A fruit" not in out or "A tech company" in out
+
+    def test_refine_answer_return_sources_returns_tuple_with_sources(self):
+        """When return_sources=True, returns (text, source_records) with definition and sentence types."""
+        concept_bundle = {"terms": ["a", "b"], "definitions": {"a": "Def a.", "b": "Def b."}}
+        id_to_word = {1: "a", 2: "b"}
+        encoded_index = {
+            0: {"text": "First sentence.", "genre_id": "general"},
+            1: {"text": "Second.", "genre_id": "general"},
+        }
+        result = graph_attention.refine_answer(
+            [1, 2], [0, 1], concept_bundle, encoded_index, id_to_word,
+            genre_id="general", max_sentences=5, include_definitions=True,
+            return_sources=True,
+        )
+        assert isinstance(result, tuple)
+        text, sources = result
+        assert isinstance(text, str)
+        assert isinstance(sources, list)
+        assert "Def a" in text or "Def b" in text
+        def_sources = [s for s in sources if s.get("type") == "definition"]
+        sent_sources = [s for s in sources if s.get("type") == "sentence"]
+        assert len(def_sources) >= 1
+        assert any("term" in s for s in def_sources)
+        assert len(sent_sources) >= 1
+        assert any("sentence_id" in s for s in sent_sources)
+
 
 class TestNextSpan:
     def test_next_span_collects_similar_sentences_genre_filtered(self):
@@ -364,6 +409,31 @@ class TestEmbedAnchor:
             if w in word_to_id:
                 assert word_to_id[w] in v_W_0
                 assert v_W_0[word_to_id[w]] >= 0.5
+
+    def test_embed_anchor_list_defn_adds_tokens_from_all_senses(self):
+        """When definitions[term] is a list (multiple senses), all sense strings contribute to v_W."""
+        concept_bundle = {
+            "terms": ["function"],
+            "definitions": {
+                "function": ["A relation from inputs to outputs.", "A role or purpose."],
+            },
+        }
+        word_to_id = {"function": 1, "A": 2, "relation": 3, "role": 4, "purpose": 5, "inputs": 6, "outputs": 7}
+        data = {
+            "sentence_words": {"0": [1, 2, 3], "1": [1, 4, 5]},
+            "word_cooccurrence": {},
+            "word_next": {},
+            "sentence_similar": {},
+        }
+        graph = CorpusGraph(data)
+        v_W_0, _ = graph_attention.embed_anchor(
+            concept_bundle, graph, word_to_id,
+            use_definition_words=True, definition_word_weight=0.5,
+        )
+        # Tokens from first sense
+        assert word_to_id["relation"] in v_W_0 or word_to_id["inputs"] in v_W_0 or word_to_id["outputs"] in v_W_0
+        # Tokens from second sense
+        assert word_to_id["role"] in v_W_0 or word_to_id["purpose"] in v_W_0
 
 
 class TestPropagationLayer:

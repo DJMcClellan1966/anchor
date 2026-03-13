@@ -16,13 +16,14 @@ def _tokenize(query: str) -> list[str]:
 
 
 class WebsterEngine:
-    """Dictionary engine backed by a Webster-style JSON: {"word": "definition", ...}."""
+    """Dictionary engine backed by a Webster-style JSON: {"word": "definition" or "definition_list", ...}.
+    Values may be a single string or a list of strings (multiple senses)."""
 
     def __init__(self, json_path: str | Path) -> None:
         self._path = Path(json_path).resolve()
-        self._data: dict[str, str] | None = None
+        self._data: dict[str, str | list[str]] | None = None
 
-    def _load(self) -> dict[str, str]:
+    def _load(self) -> dict[str, str | list[str]]:
         if self._data is not None:
             return self._data
         if not self._path.exists():
@@ -35,7 +36,7 @@ class WebsterEngine:
             return self._data
         self._data = {}
         for k, v in raw.items():
-            if isinstance(k, str) and isinstance(v, str):
+            if isinstance(k, str) and (isinstance(v, str) or (isinstance(v, list) and all(isinstance(x, str) for x in v))):
                 self._data[k.lower()] = v
         return self._data
 
@@ -43,12 +44,13 @@ class WebsterEngine:
         """
         Return concept bundle shape: definition_map, key_words, definitions
         for terms found by tokenizing query and looking up each token.
+        definitions values may be str or list[str] (multiple senses).
         """
         data = self._load()
         if not data or not (query or "").strip():
             return {}
         tokens = _tokenize(query)
-        definition_map: dict[str, str] = {}
+        definition_map: dict[str, str | list[str]] = {}
         for t in tokens:
             key = t.lower()
             if key in data:
