@@ -661,6 +661,35 @@ def _sample_from_distribution(p: dict[int, float]) -> int | None:
     return random.choices(population, weights=weights, k=1)[0]
 
 
+def _blend_voice(
+    p: dict[int, float],
+    pi: dict[int, float],
+    alpha: float,
+    top_k: int = 0,
+) -> dict[int, float]:
+    """
+    Blend distribution p with corpus voice (stationary pi). p_voice[w] = (1 - alpha) * p[w] + alpha * pi_norm[w].
+    If top_k > 0, restrict pi to top-k by value before normalizing; else use full pi.
+    Returns L1-normalized distribution.
+    """
+    if not pi or alpha <= 0:
+        return normalize_visit_dict(p)
+    sorted_pi = sorted(pi.items(), key=lambda x: -x[1])
+    if top_k > 0:
+        sorted_pi = sorted_pi[:top_k]
+    if not sorted_pi:
+        return normalize_visit_dict(p)
+    total = sum(m for _, m in sorted_pi)
+    if total <= 0:
+        return normalize_visit_dict(p)
+    pi_norm = {w: m / total for w, m in sorted_pi}
+    blended = {
+        w: (1 - alpha) * p.get(w, 0) + alpha * pi_norm.get(w, 0)
+        for w in set(p) | set(pi_norm)
+    }
+    return normalize_visit_dict(blended)
+
+
 def generate_autoregressive(
     query: str,
     concept_bundle: dict[str, Any],
@@ -670,6 +699,7 @@ def generate_autoregressive(
     id_to_word: dict[int, str],
     encoded_index: dict[int, dict[str, Any]],
     genre_id: str | list[str],
+    voice_pi: dict[int, float] | None = None,
 ) -> str:
     """
     Generate response token-by-token: embed(context) -> layers -> softmax(v_W) -> sample next -> append.
@@ -757,6 +787,10 @@ def generate_autoregressive(
             )
         else:
             p = output_head(v_W, dict_term_ids=dict_term_ids if dict_term_ids else None, dict_boost=output_dict_boost)
+        if voice_pi:
+            voice_alpha = float(config.get("voice_alpha", 0.2))
+            voice_top_k = int(config.get("voice_top_k", 20))
+            p = _blend_voice(p, voice_pi, voice_alpha, voice_top_k)
         next_id = _sample_from_distribution(p)
         if next_id is None:
             # Fallback: sample from P(·|last token) if we have context
@@ -884,10 +918,22 @@ def run(
 
     use_autoregressive = config.get("use_autoregressive_generation", False)
     if use_autoregressive:
+        voice_pi: dict[int, float] | None = None
+        run_extras_ar: dict[str, Any] = {}
+        if config.get("use_voice_of_corpus", False) and data_path:
+            cache_key = str(data_path)
+            if cache_key not in _stationary_cache:
+                _stationary_cache[cache_key] = stationary_distribution(graph)
+            voice_pi = _stationary_cache[cache_key]
+            if voice_pi and config.get("voice_in_extras", True):
+                top_k = int(config.get("voice_top_k", 20))
+                sorted_pi = sorted(voice_pi.items(), key=lambda x: -x[1])[:top_k] if top_k > 0 else sorted(voice_pi.items(), key=lambda x: -x[1])
+                run_extras_ar["voice_central_terms"] = [id_to_word.get(w, "") for w, _ in sorted_pi if id_to_word.get(w)]
         result = generate_autoregressive(
-            query, concept_bundle, config, graph, word_to_id, id_to_word, encoded_index, genre_id
+            query, concept_bundle, config, graph, word_to_id, id_to_word, encoded_index, genre_id,
+            voice_pi=voice_pi,
         )
-        return (result, {}) if result is not None else None
+        return (result, run_extras_ar) if result is not None else None
 
     # One-shot path: refactored embed -> run_layers (with optional norm) -> pattern -> refine
     use_normalized_layers = config.get("use_normalized_layers", True)
@@ -926,6 +972,7 @@ def run(
         active_categories=active_categories,
     )
     use_stationary_boost = config.get("use_stationary_boost", False)
+    pi: dict[int, float] | None = None
     if use_stationary_boost and data_path:
         cache_key = str(data_path)
         if cache_key not in _stationary_cache:
@@ -939,6 +986,11 @@ def run(
                 v_W_0[wid] = v_W_0.get(wid, 0) + alpha * mass
                 for sid in graph.sentences_containing_word(wid):
                     v_S_0[sid] = v_S_0.get(sid, 0) + alpha * mass
+    if config.get("use_voice_of_corpus", False) and data_path and pi is None:
+        cache_key = str(data_path)
+        if cache_key not in _stationary_cache:
+            _stationary_cache[cache_key] = stationary_distribution(graph)
+        pi = _stationary_cache[cache_key]
     word_visits: dict[int, float] = {}
     sentence_visits: dict[int, float] = {}
     for _ in range(max_iter):
@@ -1011,6 +1063,19 @@ def run(
         except Exception:
             pass
 
+    if config.get("use_voice_of_corpus", False) and pi:
+        voice_alpha = float(config.get("voice_alpha", 0.2))
+        voice_top_k = int(config.get("voice_top_k", 20))
+        sorted_pi = sorted(pi.items(), key=lambda x: -x[1])
+        if voice_top_k > 0:
+            sorted_pi = sorted_pi[:voice_top_k]
+        if sorted_pi:
+            total = sum(m for _, m in sorted_pi)
+            if total > 0:
+                pi_norm = {w: m / total for w, m in sorted_pi}
+                for w, m in pi_norm.items():
+                    word_visits[w] = word_visits.get(w, 0.0) + voice_alpha * m
+
     pattern_word_ids, pattern_sentence_ids, secondary_word_ids, secondary_sentence_ids = detect_pattern(
         word_visits, sentence_visits, top_k=top_k, num_groups=path_groups
     )
@@ -1028,6 +1093,14 @@ def run(
     use_attention_in_extras = config.get("use_attention_in_extras", False)
     use_critic_loop = config.get("use_critic_loop", False)
     run_extras: dict[str, Any] = {}
+    if config.get("voice_in_extras", True) and config.get("use_voice_of_corpus", False) and pi:
+        voice_top_k_extras = int(config.get("voice_top_k", 20))
+        sorted_pi_extras = sorted(pi.items(), key=lambda x: -x[1])
+        if voice_top_k_extras > 0:
+            sorted_pi_extras = sorted_pi_extras[:voice_top_k_extras]
+        run_extras["voice_central_terms"] = [
+            id_to_word.get(w, "") for w, _ in sorted_pi_extras if id_to_word.get(w)
+        ]
 
     def _refine(visits: dict[int, float] | None = None) -> str | tuple[str, list[dict[str, Any]]]:
         sv = visits if visits is not None else sentence_visits

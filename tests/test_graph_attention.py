@@ -820,6 +820,133 @@ class TestRun:
         assert h_uniform > h_peaked
         assert h_peaked == 0.0
 
+
+class TestBlendVoice:
+    """Tests for _blend_voice (voice of the corpus)."""
+
+    def test_blend_voice_alpha_zero_returns_normalized_p(self):
+        """When alpha=0, result equals normalized p."""
+        p = {1: 1.0, 2: 2.0, 3: 1.0}
+        pi = {1: 10.0, 2: 0.0, 3: 0.0}
+        out = graph_attention._blend_voice(p, pi, 0.0, top_k=0)
+        assert abs(sum(out.values()) - 1.0) < 1e-9
+        assert abs(out[1] - 0.25) < 1e-9
+        assert abs(out[2] - 0.5) < 1e-9
+        assert abs(out[3] - 0.25) < 1e-9
+
+    def test_blend_voice_alpha_one_returns_normalized_pi(self):
+        """When alpha=1, result equals normalized pi (top-k)."""
+        p = {1: 1.0, 2: 1.0}
+        pi = {1: 0.5, 2: 0.5}
+        out = graph_attention._blend_voice(p, pi, 1.0, top_k=0)
+        assert abs(sum(out.values()) - 1.0) < 1e-9
+        assert abs(out[1] - 0.5) < 1e-9
+        assert abs(out[2] - 0.5) < 1e-9
+
+    def test_blend_voice_increases_mass_on_high_pi_terms(self):
+        """Blending with alpha in (0,1) increases mass on high-π terms vs original p."""
+        p = {1: 0.1, 2: 0.9}
+        pi = {1: 0.9, 2: 0.1}
+        out = graph_attention._blend_voice(p, pi, 0.5, top_k=0)
+        assert out[1] > p[1]
+        assert out[2] < p[2]
+        assert abs(sum(out.values()) - 1.0) < 1e-9
+
+
+class TestGenerateAutoregressiveVoice:
+    """Voice of corpus in autoregressive generation."""
+
+    def test_generate_autoregressive_with_voice_pi_returns_string(self):
+        """With voice_pi passed, generate_autoregressive still returns a non-empty string."""
+        concept_bundle = {"terms": [], "definitions": {}}
+        word_to_id = {"a": 1, "b": 2}
+        id_to_word = {1: "a", 2: "b"}
+        data = {
+            "sentence_words": {"0": [1, 2]},
+            "word_cooccurrence": {},
+            "word_next": {"1": {"2": 1}},
+            "sentence_similar": {},
+        }
+        graph = CorpusGraph(data)
+        encoded_index = {0: {"text": "a b", "genre_id": "general"}}
+        config = {
+            "autoregressive_max_tokens": 5,
+            "autoregressive_context_window": 10,
+            "autoregressive_stop_at_sentence_end": False,
+            "attention_loop_hops": 2,
+            "attention_loop_use_weights": True,
+            "use_normalized_layers": True,
+            "include_definitions_in_response": False,
+            "voice_alpha": 0.2,
+            "voice_top_k": 20,
+        }
+        voice_pi = {1: 0.6, 2: 0.4}
+        out = graph_attention.generate_autoregressive(
+            "a",
+            concept_bundle,
+            config,
+            graph,
+            word_to_id,
+            id_to_word,
+            encoded_index,
+            genre_id="general",
+            voice_pi=voice_pi,
+        )
+        assert isinstance(out, str)
+        assert out.strip()
+
+
+class TestRunVoiceExtras:
+    """run_extras contains voice_central_terms when use_voice_of_corpus and voice_in_extras."""
+
+    def test_run_with_use_voice_of_corpus_includes_voice_central_terms_in_extras(self, tmp_path: Path):
+        """When use_voice_of_corpus and voice_in_extras, run_extras contains voice_central_terms."""
+        corpus = tmp_path / "corpus"
+        corpus.mkdir(exist_ok=True)
+        with open(corpus / "vocab.json", "w", encoding="utf-8") as f:
+            json.dump(
+                {"word_to_id": {"a": 0, "b": 1}, "id_to_word": {"0": "a", "1": "b"}},
+                f,
+            )
+        with open(corpus / "encoded_sentences.jsonl", "w", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {"sentence_id": 0, "genre_id": "general", "text": "A b.", "token_ids": [0, 1]}
+                )
+                + "\n"
+            )
+        with open(corpus / "graph.json", "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "sentence_words": {"0": [0, 1]},
+                    "word_cooccurrence": {"0": [1], "1": [0]},
+                    "word_next": {"0": {"1": 1}},
+                    "sentence_similar": {"0": []},
+                },
+                f,
+            )
+
+        class MockEngine:
+            @staticmethod
+            def get_context_for_description(q):
+                return {"concepts": [], "definitions": {}}
+
+        config = {
+            "default_genre_id": "general",
+            "attention_loop_hops": 2,
+            "attention_loop_top_k": 5,
+            "use_voice_of_corpus": True,
+            "voice_in_extras": True,
+            "voice_top_k": 20,
+        }
+        result = graph_attention.run("a", MockEngine(), config, tmp_path)
+        assert result is not None
+        out, run_extras = result
+        assert isinstance(run_extras, dict)
+        assert "voice_central_terms" in run_extras
+        assert isinstance(run_extras["voice_central_terms"], list)
+        assert all(isinstance(t, str) for t in run_extras["voice_central_terms"])
+
     def test_run_returns_tuple_with_run_extras(self, tmp_path: Path):
         """run() returns (response_text, run_extras) where run_extras is a dict."""
         corpus = tmp_path / "corpus"
