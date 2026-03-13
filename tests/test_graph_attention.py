@@ -341,6 +341,30 @@ class TestEmbedAnchor:
         assert 1 in v_W_0 and 2 in v_W_0
         assert 0 in v_S_0
 
+    def test_embed_anchor_with_use_definition_words_adds_definition_tokens_to_v_W(self):
+        concept_bundle = {
+            "terms": ["apple"],
+            "definitions": {"apple": "A fruit that grows on trees."},
+        }
+        word_to_id = {"apple": 1, "A": 2, "fruit": 3, "that": 4, "grows": 5, "on": 6, "trees": 7, ".": 8}
+        data = {
+            "sentence_words": {"0": [1, 2, 3], "1": [3, 5, 7]},
+            "word_cooccurrence": {},
+            "word_next": {},
+            "sentence_similar": {},
+        }
+        graph = CorpusGraph(data)
+        v_W_0, v_S_0 = graph_attention.embed_anchor(
+            concept_bundle, graph, word_to_id,
+            use_definition_words=True, definition_word_weight=0.5,
+        )
+        assert 1 in v_W_0
+        assert v_W_0[1] >= 1.0
+        for w in ("A", "fruit", "that", "grows", "on", "trees"):
+            if w in word_to_id:
+                assert word_to_id[w] in v_W_0
+                assert v_W_0[word_to_id[w]] >= 0.5
+
 
 class TestPropagationLayer:
     def test_use_cooccurrence_spreads_to_cooccurring_words(self):

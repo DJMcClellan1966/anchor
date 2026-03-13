@@ -87,16 +87,40 @@ def embed_anchor(
     graph: CorpusGraph,
     word_to_id: dict[str, int],
     query_token_ids: list[int] | None = None,
+    use_definition_words: bool = False,
+    definition_word_weight: float = 0.5,
 ) -> tuple[dict[int, float], dict[int, float]]:
     """
     Build initial state H^(0) = (v_W_0, v_S_0) from query and concept bundle.
     Same as activation: terms + query_token_ids -> word and sentence nodes with weight 1.0.
+    When use_definition_words is True, also add token IDs from definition text to v_W_0
+    with definition_word_weight (get more from D: definition-aware propagation).
     """
     activated_word_ids, activated_sentence_ids = activate(
         concept_bundle, graph, word_to_id, query_token_ids=query_token_ids
     )
     v_W_0 = {wid: 1.0 for wid in activated_word_ids}
     v_S_0 = {sid: 1.0 for sid in activated_sentence_ids}
+
+    if use_definition_words and definition_word_weight > 0:
+        definitions = concept_bundle.get("definitions") or {}
+        for term, defn in definitions.items():
+            if not defn:
+                continue
+            text = defn[0] if isinstance(defn, list) and defn and isinstance(defn[0], str) else (defn if isinstance(defn, str) else "")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            for t in tokenize(text.strip()):
+                if t not in word_to_id:
+                    continue
+                wid = word_to_id[t]
+                v_W_0[wid] = v_W_0.get(wid, 0.0) + definition_word_weight
+        if v_W_0 and activated_sentence_ids:
+            for wid in v_W_0:
+                if wid not in activated_word_ids and wid not in (query_token_ids or []):
+                    for sid in graph.sentences_containing_word(wid):
+                        v_S_0[sid] = v_S_0.get(sid, 0.0) + definition_word_weight * 0.5
+
     return v_W_0, v_S_0
 
 
@@ -599,8 +623,11 @@ def generate_autoregressive(
         else:
             query_token_ids_for_embed = context[-context_window:] if len(context) >= context_window else context
 
+        use_def_words = config.get("use_definition_words_in_activation", True)
+        def_weight = float(config.get("definition_word_weight", 0.5))
         v_W_0, v_S_0 = embed_anchor(
-            concept_bundle, graph, word_to_id, query_token_ids=query_token_ids_for_embed
+            concept_bundle, graph, word_to_id, query_token_ids=query_token_ids_for_embed,
+            use_definition_words=use_def_words, definition_word_weight=def_weight,
         )
         if not v_W_0 and not v_S_0:
             break
@@ -761,8 +788,11 @@ def run(
     if overlay and not (overlay.get("word_word") or overlay.get("sentence_sentence")):
         overlay = {}
 
+    use_def_words = config.get("use_definition_words_in_activation", True)
+    def_weight = float(config.get("definition_word_weight", 0.5))
     v_W_0, v_S_0 = embed_anchor(
-        concept_bundle, graph, word_to_id, query_token_ids=query_token_ids
+        concept_bundle, graph, word_to_id, query_token_ids=query_token_ids,
+        use_definition_words=use_def_words, definition_word_weight=def_weight,
     )
     word_visits: dict[int, float] = {}
     sentence_visits: dict[int, float] = {}

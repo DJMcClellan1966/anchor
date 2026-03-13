@@ -220,12 +220,14 @@ When the required paths/data exist, these are used automatically. Set to `false`
 | `use_attention_loop` | `true` | When true (and graph exists), use graph-attention generator: query activates nodes, attention traverses loops (with optional relationship weights and next-word propagation), multiple path groups and next-span sentences are combined into the answer (grounded, non-hallucinatory). Set to `false` to use corpus (hybrid next-token) instead. |
 | `use_style_sentences` | `true` | Style sentences from corpus or per-genre files |
 | `use_critic` | `true` | Dictionary-based grounding score and accept/warn/reject |
-| `use_propagation_cooccurrence` | `false` | When true, propagation spreads activation via co-occurrence edges (Co(w)) |
-| `use_propagation_backward` | `false` | When true, add backward word→word step (P_prev) in propagation |
-| `use_content_dependent_j` | `false` | When true, sentence–sentence J is reweighted by current word focus (v_W) |
-| `propagation_converge_tol` | `null` | If set (e.g. 1e-4), run layers until L1 change < tol instead of fixed hops |
+| `use_propagation_cooccurrence` | `true` | When true, propagation spreads activation via co-occurrence edges (Co(w)) |
+| `use_propagation_backward` | `true` | When true, add backward word→word step (P_prev) in propagation |
+| `use_content_dependent_j` | `true` | When true, sentence–sentence J is reweighted by current word focus (v_W) |
+| `propagation_converge_tol` | `1e-4` | If set, run layers until L1 change < tol instead of fixed hops (default: converge) |
 | `propagation_overlay_path` | `null` | Path to propagation_overlay.json (learnable edge boosts from feedback) |
-| `output_dict_boost` | `0.0` | Boost for dictionary terms in output head (one-shot and autoregressive) |
+| `output_dict_boost` | `0.25` | Boost for dictionary terms in output head (one-shot and autoregressive) |
+| `use_definition_words_in_activation` | `true` | Seed v_W with token IDs from definition text (definition-aware propagation) |
+| `definition_word_weight` | `0.5` | Weight for definition-word tokens added to initial activation |
 
 ## Config
 
@@ -237,6 +239,7 @@ Env overrides: `ANCHOR_DICTIONARY_PATH`, `ANCHOR_DATA_DIR`.
 ## Documentation
 
 - **Math model:** See [docs/UNIFIED_MATH_MODEL.md](docs/UNIFIED_MATH_MODEL.md) for a unified mathematical formulation of the pipeline and a comparison with LLMs.
+- **Data math:** See [docs/ANCHOR_LLM_DATA_MATH.md](docs/ANCHOR_LLM_DATA_MATH.md) for a mathematical definition of Anchor data vs LLM data and a compare-and-contrast.
 
 ## Project layout
 
