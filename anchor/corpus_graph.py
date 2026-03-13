@@ -225,6 +225,19 @@ class CorpusGraph:
         """Token ID sequence for a sentence."""
         return list(self._sentence_words.get(sentence_id, []))
 
+    def next_word_counts_in_sentence(self, sentence_id: int, word_id: int) -> dict[int, int]:
+        """
+        Next-word counts only within this sentence (bigram within sentence s).
+        Used for per-sentence P_s(w'|w) in the sentence-mixture output model.
+        """
+        tokens = self.sentence_token_ids(sentence_id)
+        counts: dict[int, int] = {}
+        for i in range(len(tokens) - 1):
+            if tokens[i] == word_id:
+                nxt = tokens[i + 1]
+                counts[nxt] = counts.get(nxt, 0) + 1
+        return counts
+
     def sentence_ids(self) -> list[int]:
         """All sentence IDs in the graph."""
         return list(self._sentence_words.keys())

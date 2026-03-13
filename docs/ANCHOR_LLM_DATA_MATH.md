@@ -373,13 +373,27 @@ From the unified math model:
 
 So the math shows how to get **latent** structure (hubs, themes, focus) from the same **P**, **J**, and **v**_W.
 
-### 7.4 Summary
+### 7.4 Simplified LLM corpus model and sentence-mixture output
+
+We can model an LLM’s corpus in a simplified way so that Anchor’s **simple** corpus can be used in a **more complex** way — without adding new raw data.
+
+**Simplified LLM corpus model:** The corpus is summarized as (a) a global **P**(*w*′ | *w*) (bigram), and (b) a set of **context types** — here, sentences *s* ∈ **S** — each with a per-type conditional *P*_s(*w*′ | *w*) (bigram **within that sentence only**). The output distribution for context *c* is a blend of a base distribution and a sentence-weighted mixture:
+
+- *p*_base = normalize(**v**_W) (current output head).
+- *p*(· | *c*) = (1 − α) *p*_base + α ∑_s **v**_S(*s*) *P*_s(· | *w*_prev),
+
+where *w*_prev is the last token of *c*, **v**_S is the sentence visit distribution from propagation, and *P*_s is the next-token distribution within sentence *s* only. So the “complexity” of the LLM corpus is approximated by: **many context types** (sentences) and **per-type conditionals** *P*_s, with mixture weights **v**_S(*s*) that depend on the query/context via propagation.
+
+**Anchor realization:** **v**_S from propagation = mixture weights α_s. *P*_s(· | *w*) is computed **on the fly** from **t**_s (sentence token sequence) — no new stored graph data. The blend with the existing output head is controlled by α = `sentence_mixture_weight`. When enabled (e.g. in autoregressive generation), the next-token distribution is (1−α)*p*_base + α *p*_mix, so the same simple corpus **S** and **t**_s are used in a more complex way: as a **mixture of sentence-local bigram models** weighted by relevance **v**_S.
+
+### 7.5 Summary
 
 | Question | What the math shows |
 |----------|---------------------|
 | Can Anchor get more from **D**? | Yes: use **D** in activation, refinement, *and* in propagation/output (e.g. **output_dict_boost**, or inject definition words into **v**_W). |
 | Can Anchor get more from **P**, **J**, **S**? | Yes: more edge types (Co, **P**_prev), content-dependent **J**, run to convergence; and latent use (**P**^ℓ, *π*, eigenvectors; clustering on **J**). |
 | Can Anchor get more from one propagation run? | Yes: primary + secondary + next-span from **v**_W, **v**_S; entropy of **v**_W for focus; optional overlay for adaptation. |
+| Can the simple corpus be used in a more “LLM-like” way? | Yes: model the corpus as a **mixture of context types** (sentences) with per-sentence bigram *P*_s; use **v**_S as mixture weights and blend (1−α)*p*_base + α ∑_s **v**_S(*s*) *P*_s(·|*w*_prev) in the output head (sentence-mixture output). |
 
 **Bottom line:** The math does show how Anchor can get more out of the data it uses: **reuse** each object in more roles, **extend** propagation over the same graph (Co, **P**_prev, content-dependent **J**, convergence, overlay), and **derive** latent structure (**P**^ℓ, *π*, spectral/clustering, entropy) from the same **P**, **J**, and visit distributions. No new raw data is required — only additional use of the same **D**, **S**, **t**_s, **P**, **J**, and encoded index.
 

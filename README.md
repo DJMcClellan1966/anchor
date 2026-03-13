@@ -238,6 +238,8 @@ When the required paths/data exist, these are used automatically. Set to `false`
 | `output_dict_boost` | `0.25` | Boost for dictionary terms in output head (one-shot and autoregressive) |
 | `use_definition_words_in_activation` | `true` | Seed v_W with token IDs from definition text (definition-aware propagation) |
 | `definition_word_weight` | `0.5` | Weight for definition-word tokens added to initial activation |
+| `use_sentence_mixture_output` | `true` | When true (default, autoregressive only), next-token distribution blends v_W-based output with v_S-weighted per-sentence bigram mixture (simplified LLM-corpus model) |
+| `sentence_mixture_weight` | `0.5` | Blend weight α for sentence mixture when `use_sentence_mixture_output` is true: p = (1−α) p_base + α p_mix |
 
 ## Config
 

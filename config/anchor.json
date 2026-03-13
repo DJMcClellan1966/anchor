@@ -54,5 +54,7 @@
   "propagation_overlay_path": null,
   "output_dict_boost": 0.25,
   "use_definition_words_in_activation": true,
-  "definition_word_weight": 0.5
+  "definition_word_weight": 0.5,
+  "use_sentence_mixture_output": true,
+  "sentence_mixture_weight": 0.5
 }

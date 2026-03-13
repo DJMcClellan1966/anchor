@@ -510,6 +510,49 @@ class TestOutputHead:
         assert p[1] > p[3] and p[2] > p[3]
 
 
+class TestOutputHeadSentenceMixture:
+    def test_mixture_weight_zero_equals_output_head(self):
+        """When mixture_weight is 0, output_head_sentence_mixture returns same as output_head."""
+        v_W = {1: 2.0, 2: 4.0}
+        v_S = {0: 1.0}
+        data = {
+            "sentence_words": {"0": [1, 2, 3]},
+            "word_cooccurrence": {},
+            "word_next": {},
+            "sentence_similar": {},
+        }
+        graph = CorpusGraph(data)
+        p_base = graph_attention.output_head(v_W)
+        p_mix = graph_attention.output_head_sentence_mixture(
+            v_W, v_S, context_last_token_id=1, graph=graph,
+            dict_term_ids=None, dict_boost=0.0, mixture_weight=0.0,
+        )
+        assert abs(sum(p_mix.values()) - 1.0) < 1e-9
+        for w in p_base:
+            assert abs(p_mix.get(w, 0) - p_base[w]) < 1e-9
+
+    def test_mixture_weight_positive_includes_sentence_next_tokens(self):
+        """When mixture_weight > 0 and a sentence has next tokens after context_last_token_id, blend has support from them."""
+        v_W = {1: 1.0, 2: 1.0}
+        v_S = {0: 1.0}
+        data = {
+            "sentence_words": {"0": [1, 2, 3]},
+            "word_cooccurrence": {},
+            "word_next": {},
+            "sentence_similar": {},
+        }
+        graph = CorpusGraph(data)
+        p = graph_attention.output_head_sentence_mixture(
+            v_W, v_S, context_last_token_id=1, graph=graph,
+            dict_term_ids=None, dict_boost=0.0, mixture_weight=0.5,
+        )
+        assert abs(sum(p.values()) - 1.0) < 1e-9
+        assert 2 in p
+        assert p[2] > 0
+        assert 1 in p
+        assert p[1] > 0
+
+
 class TestGenerateAutoregressive:
     def test_returns_non_empty_string_with_mock_graph(self):
         concept_bundle = {"terms": [], "definitions": {}}

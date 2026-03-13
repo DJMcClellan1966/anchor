@@ -183,6 +183,24 @@ class TestCorpusGraph:
         assert (1, 5) in pairs2
         assert cg.get_sentences_with_context([1, 2]) == []
 
+    def test_next_word_counts_in_sentence_returns_only_in_sentence_bigrams(self):
+        """Per-sentence next-word counts: sentence [1,2,3,2,4] gives for w=2: {3: 1, 4: 1}."""
+        data = {
+            "sentence_words": {"0": [1, 2, 3, 2, 4], "1": [2, 5, 6]},
+            "word_cooccurrence": {},
+            "word_next": {},
+            "sentence_similar": {},
+        }
+        cg = CorpusGraph(data)
+        # Sentence 0: tokens [1,2,3,2,4]; after 2 we see 3 once and 4 once
+        assert cg.next_word_counts_in_sentence(0, 2) == {3: 1, 4: 1}
+        assert cg.next_word_counts_in_sentence(0, 1) == {2: 1}
+        assert cg.next_word_counts_in_sentence(0, 4) == {}
+        # Sentence 1: [2,5,6]; after 2 only 5
+        assert cg.next_word_counts_in_sentence(1, 2) == {5: 1}
+        # Unknown sentence
+        assert cg.next_word_counts_in_sentence(99, 2) == {}
+
 
 class TestLoadCorpusGraph:
     """load_corpus_graph: missing dir, missing file."""

@@ -352,6 +352,46 @@ def output_head(
     return normalize_visit_dict(reweighted)
 
 
+def output_head_sentence_mixture(
+    v_W: dict[int, float],
+    v_S: dict[int, float],
+    context_last_token_id: int | None,
+    graph: CorpusGraph,
+    dict_term_ids: set[int] | None = None,
+    dict_boost: float = 0.0,
+    mixture_weight: float = 0.0,
+) -> dict[int, float]:
+    """
+    Blend base output_head distribution with a v_S-weighted mixture of per-sentence
+    next-token distributions: p = (1 - alpha) * p_base + alpha * p_mix, where
+    p_mix = sum_s v_S(s) * P_s(·|context_last_token_id) and P_s is bigram within sentence s.
+    When mixture_weight <= 0 or no v_S or context_last_token_id is None, returns p_base only.
+    """
+    p_base = output_head(v_W, dict_term_ids=dict_term_ids, dict_boost=dict_boost)
+    if mixture_weight <= 0 or not v_S or context_last_token_id is None:
+        return p_base
+    p_mix: dict[int, float] = {}
+    for sid, weight in v_S.items():
+        if weight <= 0:
+            continue
+        counts = graph.next_word_counts_in_sentence(sid, context_last_token_id)
+        if not counts:
+            continue
+        total = sum(counts.values())
+        if total <= 0:
+            continue
+        for w, c in counts.items():
+            p_mix[w] = p_mix.get(w, 0.0) + weight * (c / total)
+    if not p_mix:
+        return p_base
+    p_mix = normalize_visit_dict(p_mix)
+    all_keys = set(p_base) | set(p_mix)
+    blended = {}
+    for w in all_keys:
+        blended[w] = (1.0 - mixture_weight) * p_base.get(w, 0.0) + mixture_weight * p_mix.get(w, 0.0)
+    return normalize_visit_dict(blended)
+
+
 def traverse_loops(
     activated_word_ids: set[int],
     activated_sentence_ids: set[int],
@@ -630,6 +670,8 @@ def generate_autoregressive(
     content_dependent_j = config.get("use_content_dependent_j", False)
     overlay = {}  # generate_autoregressive does not load overlay by default (no data_path in signature)
     output_dict_boost = float(config.get("output_dict_boost", 0.0))
+    use_sentence_mixture = config.get("use_sentence_mixture_output", True)
+    sentence_mixture_weight = float(config.get("sentence_mixture_weight", 0.5))
     dict_term_ids: set[int] = set()
     if concept_bundle.get("terms"):
         dict_term_ids = {word_to_id[t] for t in (concept_bundle.get("terms") or []) if t in word_to_id}
@@ -675,7 +717,15 @@ def generate_autoregressive(
             content_dependent_j=content_dependent_j,
             overlay=overlay if overlay else None,
         )
-        p = output_head(v_W, dict_term_ids=dict_term_ids if dict_term_ids else None, dict_boost=output_dict_boost)
+        if use_sentence_mixture and sentence_mixture_weight > 0 and context:
+            p = output_head_sentence_mixture(
+                v_W, v_S, context[-1], graph,
+                dict_term_ids=dict_term_ids if dict_term_ids else None,
+                dict_boost=output_dict_boost,
+                mixture_weight=sentence_mixture_weight,
+            )
+        else:
+            p = output_head(v_W, dict_term_ids=dict_term_ids if dict_term_ids else None, dict_boost=output_dict_boost)
         next_id = _sample_from_distribution(p)
         if next_id is None:
             # Fallback: sample from P(·|last token) if we have context
