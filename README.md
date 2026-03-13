@@ -52,7 +52,7 @@ You can build a single sentence corpus, vocabulary, and word/sentence graph for 
    ```bash
    python scripts/build_graph.py data
    ```
-   Writes `data/corpus/graph.json` (with inverted index for context→sentences) and, if vocab exists, `data/corpus/corpus_model.json` (by-product transition matrix for a 1-layer LM). Use `--no-corpus-model` to skip the corpus model. Use `--context-length 5` (default) for the context window.
+   Writes `data/corpus/graph.json` (with inverted index for context→sentences and **word→sentence index** so **S**(w) is O(1)), and, if vocab exists, `data/corpus/corpus_model.json` (by-product transition matrix for a 1-layer LM). The graph also builds **word categories** by frequency rank (e.g. top 100 = category 0); set `use_category_filter: true` in config to restrict propagation to active categories for faster related-word lookup. Use `--no-corpus-model` to skip the corpus model. Use `--context-length 5` (default) for the context window.
 
 4. **Use in Anchor** — Set `align_data_dir` in config/paths.json to `data` (or the directory containing `corpus/`). Option C is **on by default** when the graph exists; set `"use_corpus_graph": false` in config/anchor.json to turn it off.
 
@@ -85,6 +85,8 @@ Use [Webster's English Dictionary (JSON)](https://github.com/matthewreagan/Webst
 **Multiple senses:** Webster JSON values may be a single string or a list of strings (one per sense). Each sense is ingested as a separate sentence with the same `term`; propagation can select the most relevant sense by visit score. Refinement picks the sense whose sentence has the highest `sentence_visits` when available.
 
 **Source attribution (Theorem 4):** `refine_answer(..., return_sources=True)` returns `(text, source_records)` where each record is `{"type": "definition", "term": str}` or `{"type": "sentence", "sentence_id": int}`, so every part of the response is traceable to the store.
+
+**Math API:** The objects and pipeline in [docs/UNIFIED_MATH_MODEL.md](docs/UNIFIED_MATH_MODEL.md) (V, τ, S, **S**(w), **P**, **J**, Embed_anchor, Propagation_layer, Output_head, Refine) are exposed in code via **`anchor.anchor_math`**. Use the `AnchorMath` class with a loaded graph and vocab for doc-aligned access (e.g. `S_of_w(w)`, `Embed_anchor(...)`).
 
 **Minimal term set:** To get the minimal set of dictionary terms needed for a set of queries (Theorem 5), run:
 ```bash

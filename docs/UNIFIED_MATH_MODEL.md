@@ -1,6 +1,6 @@
 # Unified Mathematical Model: Anchor and LLM Comparison
 
-This document formalizes the Anchor pipeline as a single mathematical model (vocabulary, graph, activation, propagation, pattern, refinement, critic), describes latent-structure and analytical "powers," formulates a standard LLM in the same style, and compares the two. For a **data-only** treatment (what is "data" in Anchor vs LLM, where it lives, compare and contrast), see [ANCHOR_LLM_DATA_MATH.md](ANCHOR_LLM_DATA_MATH.md).
+This document formalizes the Anchor pipeline as a single mathematical model (vocabulary, graph, activation, propagation, pattern, refinement, critic), describes latent-structure and analytical "powers," formulates a standard LLM in the same style, and compares the two. For a **data-only** treatment (what is "data" in Anchor vs LLM, where it lives, compare and contrast), see [ANCHOR_LLM_DATA_MATH.md](ANCHOR_LLM_DATA_MATH.md). The **code API** for these objects (V, τ, S, **S**(w), **P**, **J**, Embed_anchor, etc.) lives in `anchor/anchor_math.py` (class `AnchorMath`).
 
 ---
 

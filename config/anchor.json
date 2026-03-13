@@ -46,6 +46,7 @@
   "autoregressive_max_tokens": 80,
   "autoregressive_context_window": 10,
   "autoregressive_stop_at_sentence_end": true,
+  "use_category_filter": false,
   "use_propagation_cooccurrence": true,
   "use_propagation_backward": true,
   "use_content_dependent_j": true,
@@ -56,5 +57,6 @@
   "use_definition_words_in_activation": true,
   "definition_word_weight": 0.5,
   "use_sentence_mixture_output": true,
-  "sentence_mixture_weight": 0.5
+  "sentence_mixture_weight": 0.5,
+  "use_category_filter": false
 }

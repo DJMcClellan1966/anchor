@@ -42,6 +42,7 @@ def build_graph(
     top_similar_per_sentence: int = 20,
     context_length: int = 5,
     encoded_dictionary_path: Path | None = None,
+    category_size: int = 100,
 ) -> dict[str, Any]:
     """
     Build graph from encoded_sentences.jsonl.
@@ -132,8 +133,29 @@ def build_graph(
             for c in candidates[:top_similar_per_sentence]
         ]
 
+    # Inverted index: word_id -> list of sentence_ids containing that word (S(w))
+    word_to_sentences: dict[int, list[int]] = {}
+    for sid, tids in sentence_words.items():
+        for wid in tids:
+            word_to_sentences.setdefault(wid, []).append(sid)
+
+    # Word categories by frequency rank (top category_size = cat 0, next = cat 1, ...)
+    word_to_category: dict[int, int] = {}
+    category_to_words: dict[int, list[int]] = {}
+    sentence_to_categories: dict[int, list[int]] = {}
+    if word_to_sentences and category_size > 0:
+        word_ids = list(word_to_sentences.keys())
+        word_ids.sort(key=lambda w: -len(word_to_sentences[w]))
+        for rank, wid in enumerate(word_ids):
+            cat = rank // category_size
+            word_to_category[wid] = cat
+            category_to_words.setdefault(cat, []).append(wid)
+        for sid, tids in sentence_words.items():
+            cats = {word_to_category[w] for w in tids if w in word_to_category}
+            sentence_to_categories[sid] = list(cats)
+
     # JSON keys must be strings
-    return {
+    out: dict[str, Any] = {
         "sentence_words": {str(k): v for k, v in sentence_words.items()},
         "word_cooccurrence": {str(k): v for k, v in word_cooccurrence_list.items()},
         "word_next": {
@@ -146,7 +168,13 @@ def build_graph(
             "context_length": context_length,
             "index": context_to_sentences,
         },
+        "word_to_sentences": {str(k): v for k, v in word_to_sentences.items()},
     }
+    if word_to_category:
+        out["word_to_category"] = {str(k): v for k, v in word_to_category.items()}
+        out["category_to_words"] = {str(k): v for k, v in category_to_words.items()}
+        out["sentence_to_categories"] = {str(k): v for k, v in sentence_to_categories.items()}
+    return out
 
 
 def save_graph(graph: dict[str, Any], path: Path) -> None:
@@ -184,6 +212,22 @@ class CorpusGraph:
             int(k): [[int(p[0]), float(p[1])] for p in v]
             for k, v in data.get("sentence_similar", {}).items()
         }
+        raw_w2s = data.get("word_to_sentences") or {}
+        self._word_to_sentences: dict[int, list[int]] | None = None
+        if raw_w2s:
+            self._word_to_sentences = {
+                int(k): [int(x) for x in v] for k, v in raw_w2s.items()
+            }
+        raw_w2c = data.get("word_to_category") or {}
+        self._word_to_category: dict[int, int] = {int(k): int(v) for k, v in raw_w2c.items()}
+        raw_c2w = data.get("category_to_words") or {}
+        self._category_to_words: dict[int, list[int]] = {
+            int(k): [int(x) for x in v] for k, v in raw_c2w.items()
+        }
+        raw_s2c = data.get("sentence_to_categories") or {}
+        self._sentence_to_categories: dict[int, set[int]] = {}
+        for k, v in raw_s2c.items():
+            self._sentence_to_categories[int(k)] = set(int(x) for x in v)
         self._word_prev: dict[int, dict[int, int]] = {}
         for w, next_counts in self._word_next.items():
             for w_next, c in next_counts.items():
@@ -197,11 +241,45 @@ class CorpusGraph:
         """True if the graph has an inverted index for context -> sentences."""
         return len(self._context_index) > 0
 
+    def has_category_data(self) -> bool:
+        """True if the graph has word-to-category data for category-filtered lookup."""
+        return bool(self._word_to_category)
+
+    def word_category(self, word_id: int) -> int | None:
+        """Category ID for this word (by frequency rank), or None if unknown."""
+        return self._word_to_category.get(word_id)
+
     def sentences_containing_word(self, word_id: int) -> list[int]:
-        """Sentence IDs that contain this word."""
+        """Sentence IDs that contain this word (S(w)). Uses word_to_sentences when present."""
+        if self._word_to_sentences is not None:
+            return list(self._word_to_sentences.get(word_id, []))
         return [
             sid for sid, tids in self._sentence_words.items()
             if word_id in tids
+        ]
+
+    def sentences_containing_word_in_categories(
+        self, word_id: int, category_set: set[int]
+    ) -> list[int]:
+        """Sentence IDs that contain this word and have at least one word in category_set."""
+        sids = self.sentences_containing_word(word_id)
+        if not self._sentence_to_categories or not category_set:
+            return sids
+        return [
+            sid for sid in sids
+            if self._sentence_to_categories.get(sid, set()) & category_set
+        ]
+
+    def sentences_containing_word_in_categories(
+        self, word_id: int, category_set: set[int]
+    ) -> list[int]:
+        """Sentence IDs that contain this word and have at least one word in category_set."""
+        sids = self.sentences_containing_word(word_id)
+        if not self._sentence_to_categories or not category_set:
+            return sids
+        return [
+            sid for sid in sids
+            if self._sentence_to_categories.get(sid, set()) & category_set
         ]
 
     def similar_sentences(self, sentence_id: int, top_k: int = 10) -> list[tuple[int, float]]:

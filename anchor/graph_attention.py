@@ -41,11 +41,23 @@ def _load_encoded_index(encoded_path: Path) -> dict[int, dict[str, Any]]:
     return index
 
 
+def _sentence_ids_for_word(
+    graph: CorpusGraph,
+    word_id: int,
+    active_categories: set[int] | None,
+) -> list[int]:
+    """Sentence IDs containing this word; category-filtered when active_categories and graph support it."""
+    if active_categories is not None and graph.has_category_data():
+        return graph.sentences_containing_word_in_categories(word_id, active_categories)
+    return graph.sentences_containing_word(word_id)
+
+
 def activate(
     concept_bundle: dict[str, Any],
     graph: CorpusGraph,
     word_to_id: dict[str, int],
     query_token_ids: list[int] | None = None,
+    active_categories: set[int] | None = None,
 ) -> tuple[set[int], set[int]]:
     """
     Activate nodes from query: map concept terms to word_ids, then to sentence_ids
@@ -61,12 +73,12 @@ def activate(
             continue
         wid = word_to_id[term]
         activated_word_ids.add(wid)
-        for sid in graph.sentences_containing_word(wid):
+        for sid in _sentence_ids_for_word(graph, wid, active_categories):
             activated_sentence_ids.add(sid)
     if query_token_ids:
         for wid in query_token_ids:
             activated_word_ids.add(wid)
-            for sid in graph.sentences_containing_word(wid):
+            for sid in _sentence_ids_for_word(graph, wid, active_categories):
                 activated_sentence_ids.add(sid)
     if not activated_word_ids and not activated_sentence_ids:
         # No terms in vocab: activate all sentences so we still have a path
@@ -89,6 +101,7 @@ def embed_anchor(
     query_token_ids: list[int] | None = None,
     use_definition_words: bool = False,
     definition_word_weight: float = 0.5,
+    active_categories: set[int] | None = None,
 ) -> tuple[dict[int, float], dict[int, float]]:
     """
     Build initial state H^(0) = (v_W_0, v_S_0) from query and concept bundle.
@@ -97,7 +110,8 @@ def embed_anchor(
     with definition_word_weight (get more from D: definition-aware propagation).
     """
     activated_word_ids, activated_sentence_ids = activate(
-        concept_bundle, graph, word_to_id, query_token_ids=query_token_ids
+        concept_bundle, graph, word_to_id, query_token_ids=query_token_ids,
+        active_categories=active_categories,
     )
     v_W_0 = {wid: 1.0 for wid in activated_word_ids}
     v_S_0 = {sid: 1.0 for sid in activated_sentence_ids}
@@ -119,7 +133,7 @@ def embed_anchor(
         if v_W_0 and activated_sentence_ids:
             for wid in v_W_0:
                 if wid not in activated_word_ids and wid not in (query_token_ids or []):
-                    for sid in graph.sentences_containing_word(wid):
+                    for sid in _sentence_ids_for_word(graph, wid, active_categories):
                         v_S_0[sid] = v_S_0.get(sid, 0.0) + definition_word_weight * 0.5
 
     return v_W_0, v_S_0
@@ -136,6 +150,7 @@ def propagation_layer(
     use_backward: bool = False,
     content_dependent_j: bool = False,
     overlay: dict[str, Any] | None = None,
+    active_categories: set[int] | None = None,
 ) -> tuple[dict[int, float], dict[int, float]]:
     """
     One hop of propagation: word->sentence, sentence->sentence (J), sentence->word, word->word (P).
@@ -158,7 +173,7 @@ def propagation_layer(
     sentence_visits = dict(v_S)
 
     for word_id, weight in w_copy.items():
-        for sid in graph.sentences_containing_word(word_id):
+        for sid in _sentence_ids_for_word(graph, word_id, active_categories):
             if not sentence_ok(sid):
                 continue
             tokens = graph.sentence_token_ids(sid)
@@ -294,6 +309,7 @@ def run_layers(
     overlay: dict[str, Any] | None = None,
     converge_tol: float | None = None,
     max_converge_iters: int = 50,
+    active_categories: set[int] | None = None,
 ) -> tuple[dict[int, float], dict[int, float]]:
     """
     Run propagation steps. If converge_tol is set, iterate until L1 change < tol or max_converge_iters.
@@ -312,6 +328,7 @@ def run_layers(
                 use_backward=use_backward,
                 content_dependent_j=content_dependent_j,
                 overlay=overlay,
+                active_categories=active_categories,
             )
             if normalize:
                 v_W = normalize_visit_dict(v_W)
@@ -328,6 +345,7 @@ def run_layers(
                 use_backward=use_backward,
                 content_dependent_j=content_dependent_j,
                 overlay=overlay,
+                active_categories=active_categories,
             )
             if normalize:
                 v_W = normalize_visit_dict(v_W)
@@ -400,6 +418,7 @@ def traverse_loops(
     genre_id: str | list[str] | None = None,
     encoded_index: dict[int, dict[str, Any]] | None = None,
     use_weights: bool = True,
+    active_categories: set[int] | None = None,
 ) -> tuple[dict[int, float], dict[int, float]]:
     """
     Propagate attention over the graph. Returns (word_visits, sentence_visits)
@@ -425,7 +444,7 @@ def traverse_loops(
         s_copy = dict(sentence_visits)
         # Word -> sentence: weight by 1/len(sentence) when use_weights
         for word_id, weight in w_copy.items():
-            for sid in graph.sentences_containing_word(word_id):
+            for sid in _sentence_ids_for_word(graph, word_id, active_categories):
                 if not sentence_ok(sid):
                     continue
                 tokens = graph.sentence_token_ids(sid)
@@ -697,9 +716,22 @@ def generate_autoregressive(
 
         use_def_words = config.get("use_definition_words_in_activation", True)
         def_weight = float(config.get("definition_word_weight", 0.5))
+        use_category_filter = config.get("use_category_filter", False)
+        active_categories_gen: set[int] | None = None
+        if use_category_filter and graph.has_category_data():
+            initial_words_gen: set[int] = set()
+            for t in (concept_bundle.get("terms") or []):
+                if isinstance(t, str) and t in word_to_id:
+                    initial_words_gen.add(word_to_id[t])
+            if query_token_ids_for_embed:
+                initial_words_gen.update(query_token_ids_for_embed)
+            active_categories_gen = {c for w in initial_words_gen if (c := graph.word_category(w)) is not None}
+            if not active_categories_gen:
+                active_categories_gen = None
         v_W_0, v_S_0 = embed_anchor(
             concept_bundle, graph, word_to_id, query_token_ids=query_token_ids_for_embed,
             use_definition_words=use_def_words, definition_word_weight=def_weight,
+            active_categories=active_categories_gen,
         )
         if not v_W_0 and not v_S_0:
             break
@@ -716,6 +748,7 @@ def generate_autoregressive(
             use_backward=use_backward,
             content_dependent_j=content_dependent_j,
             overlay=overlay if overlay else None,
+            active_categories=active_categories_gen,
         )
         if use_sentence_mixture and sentence_mixture_weight > 0 and context:
             p = output_head_sentence_mixture(
@@ -870,9 +903,22 @@ def run(
 
     use_def_words = config.get("use_definition_words_in_activation", True)
     def_weight = float(config.get("definition_word_weight", 0.5))
+    use_category_filter = config.get("use_category_filter", False)
+    active_categories: set[int] | None = None
+    if use_category_filter and graph.has_category_data():
+        initial_words: set[int] = set()
+        for t in (concept_bundle.get("terms") or []):
+            if isinstance(t, str) and t in word_to_id:
+                initial_words.add(word_to_id[t])
+        if query_token_ids:
+            initial_words.update(query_token_ids)
+        active_categories = {c for w in initial_words if (c := graph.word_category(w)) is not None}
+        if not active_categories:
+            active_categories = None
     v_W_0, v_S_0 = embed_anchor(
         concept_bundle, graph, word_to_id, query_token_ids=query_token_ids,
         use_definition_words=use_def_words, definition_word_weight=def_weight,
+        active_categories=active_categories,
     )
     word_visits: dict[int, float] = {}
     sentence_visits: dict[int, float] = {}
@@ -892,6 +938,7 @@ def run(
             overlay=overlay if overlay else None,
             converge_tol=converge_tol,
             max_converge_iters=max_converge_iters,
+            active_categories=active_categories,
         )
         for k, v in v_W.items():
             word_visits[k] = word_visits.get(k, 0.0) + v

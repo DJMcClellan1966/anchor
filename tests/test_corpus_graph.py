@@ -102,6 +102,42 @@ class TestBuildGraph:
         assert key in idx
         assert [0, 5] in idx[key]
 
+    def test_word_to_sentences_inverted_index_built(self, tmp_path: Path):
+        """Build graph has word_to_sentences; sentences_containing_word uses it for O(1) lookup."""
+        p = tmp_path / "encoded.jsonl"
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"sentence_id": 0, "token_ids": [1, 2, 3], "text": "A B C"}) + "\n")
+            f.write(json.dumps({"sentence_id": 1, "token_ids": [2, 4, 5], "text": "B D E"}) + "\n")
+        g = build_graph(p)
+        assert "word_to_sentences" in g
+        assert "1" in g["word_to_sentences"]
+        assert g["word_to_sentences"]["1"] == [0]
+        assert g["word_to_sentences"]["2"] == [0, 1]
+        cg = CorpusGraph(g)
+        assert cg.sentences_containing_word(1) == [0]
+        assert set(cg.sentences_containing_word(2)) == {0, 1}
+
+    def test_word_categories_built_when_category_size_positive(self, tmp_path: Path):
+        """When categories are built, word_to_category and sentence_to_categories exist."""
+        p = tmp_path / "encoded.jsonl"
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"sentence_id": 0, "token_ids": [1, 2, 3], "text": "A B C"}) + "\n")
+            f.write(json.dumps({"sentence_id": 1, "token_ids": [2, 4], "text": "B D"}) + "\n")
+        g = build_graph(p, category_size=100)
+        assert "word_to_category" in g
+        assert "category_to_words" in g
+        assert "sentence_to_categories" in g
+        cg = CorpusGraph(g)
+        assert cg.has_category_data()
+        # Word 2 appears in 2 sentences (highest freq), then 1,3,4. So rank 0 -> cat 0, etc.
+        cat2 = cg.word_category(2)
+        assert cat2 is not None
+        # sentences_containing_word_in_categories: only sids whose sentence has a category in the set
+        sids = cg.sentences_containing_word_in_categories(2, {cat2})
+        assert set(sids) == {0, 1}
+        sids_none = cg.sentences_containing_word_in_categories(2, set())
+        assert sids_none == cg.sentences_containing_word(2)
+
 
 class TestSaveLoadGraph:
     """Round-trip and load missing/invalid."""
@@ -153,6 +189,31 @@ class TestCorpusGraph:
         assert cg.similar_sentences(0, top_k=1) == [(1, 0.5)]
         assert cg.next_word_counts(1) == {2: 1}
         assert 3 in cg.cooccurring_words(1)
+
+    def test_backward_compat_without_word_to_sentences(self):
+        """Old graph without word_to_sentences: sentences_containing_word still works via scan."""
+        data = {
+            "sentence_words": {"0": [1, 2, 3], "1": [2, 3, 4]},
+            "word_cooccurrence": {},
+            "word_next": {},
+            "sentence_similar": {},
+        }
+        cg = CorpusGraph(data)
+        assert cg.sentences_containing_word(2) == [0, 1]
+        assert cg.sentences_containing_word(1) == [0]
+        assert cg.sentences_containing_word(99) == []
+
+    def test_sentences_containing_word_in_categories_fallback_without_category_data(self):
+        """When graph has no category data, sentences_containing_word_in_categories returns unfiltered list."""
+        data = {
+            "sentence_words": {"0": [1, 2], "1": [2, 3]},
+            "word_cooccurrence": {},
+            "word_next": {},
+            "sentence_similar": {},
+        }
+        cg = CorpusGraph(data)
+        assert not cg.has_category_data()
+        assert set(cg.sentences_containing_word_in_categories(2, {0, 1})) == {0, 1}
 
     def test_missing_keys_treated_as_empty(self):
         cg = CorpusGraph({"sentence_words": {"0": [1]}})
