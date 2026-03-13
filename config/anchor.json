@@ -40,5 +40,17 @@
   "naturalize_max_tokens": 12,
   "naturalize_context_length": 5,
   "use_query_token_ids": true,
-  "use_graph_llm": true
+  "use_graph_llm": true,
+  "use_normalized_layers": true,
+  "use_autoregressive_generation": false,
+  "autoregressive_max_tokens": 80,
+  "autoregressive_context_window": 10,
+  "autoregressive_stop_at_sentence_end": true,
+  "use_propagation_cooccurrence": false,
+  "use_propagation_backward": false,
+  "use_content_dependent_j": false,
+  "propagation_converge_tol": null,
+  "propagation_max_converge_iters": 50,
+  "propagation_overlay_path": null,
+  "output_dict_boost": 0.0
 }

@@ -217,6 +217,12 @@ When the required paths/data exist, these are used automatically. Set to `false`
 | `use_attention_loop` | `true` | When true (and graph exists), use graph-attention generator: query activates nodes, attention traverses loops (with optional relationship weights and next-word propagation), multiple path groups and next-span sentences are combined into the answer (grounded, non-hallucinatory). Set to `false` to use corpus (hybrid next-token) instead. |
 | `use_style_sentences` | `true` | Style sentences from corpus or per-genre files |
 | `use_critic` | `true` | Dictionary-based grounding score and accept/warn/reject |
+| `use_propagation_cooccurrence` | `false` | When true, propagation spreads activation via co-occurrence edges (Co(w)) |
+| `use_propagation_backward` | `false` | When true, add backward word→word step (P_prev) in propagation |
+| `use_content_dependent_j` | `false` | When true, sentence–sentence J is reweighted by current word focus (v_W) |
+| `propagation_converge_tol` | `null` | If set (e.g. 1e-4), run layers until L1 change < tol instead of fixed hops |
+| `propagation_overlay_path` | `null` | Path to propagation_overlay.json (learnable edge boosts from feedback) |
+| `output_dict_boost` | `0.0` | Boost for dictionary terms in output head (one-shot and autoregressive) |
 
 ## Config
 
@@ -224,6 +230,10 @@ When the required paths/data exist, these are used automatically. Set to `false`
 - **config/anchor.json** – `use_dictionary`, `use_graph_llm`, `use_corpus_graph`, `use_scratchllm`, `include_definitions_in_response`, `system_prompt`, `conversation_turn_limit`, `streaming_max_chunk_chars`, `genre_ids`, `use_grammar`, `grammar_rules_path`, `grammar_command`, `grammar_examples_path`, `use_naturalize`, `naturalize_max_tokens`, `naturalize_context_length`, `use_query_token_ids`, `use_attention_loop`, `attention_loop_hops` (default 4), `attention_loop_top_k`, `attention_loop_use_weights`, `attention_loop_path_groups`, `attention_loop_next_span`, `attention_loop_max_iter`, `attention_loop_output_format` (default paragraph), `attention_loop_paragraph_max_chars`, `use_graph_vectors` (default true), `graph_vectors_boost`, `feedback_path`, `feedback_weights_path`, `feedback_boost`, `use_style_sentences`, `use_critic`, `critic_accept_threshold`, `critic_low_warn_threshold`, `default_genre_id`, `register`, `next_sentence_mode`, `corpus_next_sentences_top_k`, `corpus_hybrid_context_length`, `corpus_hybrid_beta`, `corpus_max_tokens`
 
 Env overrides: `ANCHOR_DICTIONARY_PATH`, `ANCHOR_DATA_DIR`.
+
+## Documentation
+
+- **Math model:** See [docs/UNIFIED_MATH_MODEL.md](docs/UNIFIED_MATH_MODEL.md) for a unified mathematical formulation of the pipeline and a comparison with LLMs.
 
 ## Project layout
 
@@ -241,6 +251,7 @@ Env overrides: `ANCHOR_DICTIONARY_PATH`, `ANCHOR_DATA_DIR`.
 - **anchor/corpus_model.py** – Load and sample from by-product corpus model (1-layer LM)
 - **anchor/webster_engine.py** – Webster JSON adapter: load word→definition JSON, implement `get_context_for_description` for concept bundle and critic
 - **anchor/wire.py** – Load config and dictionary (Basis or Webster; single place that touches external repos)
+- **anchor/corpus_cache.py** – Cache for graph, vocab, and encoded index (speeds up repeated queries in the same session)
 - **run_anchor.py** – CLI entry point
 - **run_anchor_gui.py** – Tkinter GUI (question + response; Ctrl+Enter to submit)
 - **scripts/build_corpus.py** – Build combined corpus with genre tags (from local files)
@@ -254,3 +265,4 @@ Env overrides: `ANCHOR_DICTIONARY_PATH`, `ANCHOR_DATA_DIR`.
 - **anchor/graph_vectors.py** – Load word vectors and boost sentence visits by query–sentence similarity when use_graph_vectors is true
 - **anchor/feedback.py** – Record accept/reject feedback; load feedback_weights and boost sentence visits for adaptation
 - **scripts/build_feedback_weights.py** – Build feedback_weights.json from feedback.jsonl (accepted responses) for Graph LLM adaptation
+- **scripts/build_propagation_overlay.py** – Build propagation_overlay.json from feedback_weights for learnable propagation edges

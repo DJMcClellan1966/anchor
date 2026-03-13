@@ -127,31 +127,40 @@ def get_style_sentences_from_graph(
     from .corpus_vocab import load_vocab
 
     data_path = Path(data_dir)
-    graph = load_corpus_graph(data_path)
-    if graph is None:
-        return []
-    word_to_id, _ = load_vocab(data_path / "corpus" / "vocab.json")
-    if not word_to_id:
-        return []
-
-    encoded_path = data_path / "corpus" / "encoded_sentences.jsonl"
-    if not encoded_path.exists():
-        return []
-    with open(encoded_path, encoding="utf-8") as f:
-        index = {}
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-                sid = obj.get("sentence_id", len(index))
-                index[sid] = {
-                    "genre_id": obj.get("genre_id", "general"),
-                    "text": obj.get("text", ""),
-                }
-            except (json.JSONDecodeError, TypeError):
-                continue
+    graph = None
+    word_to_id = {}
+    index = {}
+    try:
+        from .corpus_cache import get_cached_corpus_data
+        cached = get_cached_corpus_data(data_path)
+        if cached is not None:
+            graph, word_to_id, _, index = cached
+    except ImportError:
+        pass
+    if graph is None or not word_to_id:
+        graph = load_corpus_graph(data_path)
+        if graph is None:
+            return []
+        word_to_id, _ = load_vocab(data_path / "corpus" / "vocab.json")
+        if not word_to_id:
+            return []
+        encoded_path = data_path / "corpus" / "encoded_sentences.jsonl"
+        if not encoded_path.exists():
+            return []
+        with open(encoded_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                    sid = obj.get("sentence_id", len(index))
+                    index[sid] = {
+                        "genre_id": obj.get("genre_id", "general"),
+                        "text": obj.get("text", ""),
+                    }
+                except (json.JSONDecodeError, TypeError):
+                    continue
 
     terms_set = set((concept_bundle.get("terms") or []))
     candidate_sids: set[int] = set()

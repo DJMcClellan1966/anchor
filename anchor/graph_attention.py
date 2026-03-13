@@ -1,10 +1,14 @@
 """
 Graph attention loop: query lights up the graph, traverse loops with attention,
 detect repeating pattern, refine answer from pattern (grounded, non-hallucinatory).
+
+Refactored LLM-like form: Embed -> Layers (optional Norm) -> Output head (softmax over v_W).
+Supports one-shot (pattern + refine) or autoregressive (sample next token loop).
 """
 from __future__ import annotations
 
 import json
+import random
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +70,259 @@ def activate(
         # No terms in vocab: activate all sentences so we still have a path
         activated_sentence_ids = set(graph.sentence_ids())
     return activated_word_ids, activated_sentence_ids
+
+
+def normalize_visit_dict(d: dict[int, float]) -> dict[int, float]:
+    """L1-normalize so values sum to 1. If sum is 0, return d unchanged."""
+    total = sum(d.values())
+    if total <= 0:
+        return d
+    return {k: v / total for k, v in d.items()}
+
+
+def embed_anchor(
+    concept_bundle: dict[str, Any],
+    graph: CorpusGraph,
+    word_to_id: dict[str, int],
+    query_token_ids: list[int] | None = None,
+) -> tuple[dict[int, float], dict[int, float]]:
+    """
+    Build initial state H^(0) = (v_W_0, v_S_0) from query and concept bundle.
+    Same as activation: terms + query_token_ids -> word and sentence nodes with weight 1.0.
+    """
+    activated_word_ids, activated_sentence_ids = activate(
+        concept_bundle, graph, word_to_id, query_token_ids=query_token_ids
+    )
+    v_W_0 = {wid: 1.0 for wid in activated_word_ids}
+    v_S_0 = {sid: 1.0 for sid in activated_sentence_ids}
+    return v_W_0, v_S_0
+
+
+def propagation_layer(
+    v_W: dict[int, float],
+    v_S: dict[int, float],
+    graph: CorpusGraph,
+    genre_id: str | list[str] | None,
+    encoded_index: dict[int, dict[str, Any]] | None,
+    use_weights: bool,
+    use_cooccurrence: bool = False,
+    use_backward: bool = False,
+    content_dependent_j: bool = False,
+    overlay: dict[str, Any] | None = None,
+) -> tuple[dict[int, float], dict[int, float]]:
+    """
+    One hop of propagation: word->sentence, sentence->sentence (J), sentence->word, word->word (P).
+    Optional: Co(w) word->word, P_prev backward word->word, content-dependent J reweight, overlay boosts.
+    Returns new visit dicts (additive update from current state).
+    """
+    allowed_genres: set[str] = set()
+    if genre_id is not None:
+        allowed_genres = {genre_id} if isinstance(genre_id, str) else set(genre_id)
+
+    def sentence_ok(sid: int) -> bool:
+        if encoded_index is None or not allowed_genres:
+            return True
+        rec = encoded_index.get(sid)
+        return rec is not None and rec.get("genre_id") in allowed_genres
+
+    w_copy = dict(v_W)
+    s_copy = dict(v_S)
+    word_visits = dict(v_W)
+    sentence_visits = dict(v_S)
+
+    for word_id, weight in w_copy.items():
+        for sid in graph.sentences_containing_word(word_id):
+            if not sentence_ok(sid):
+                continue
+            tokens = graph.sentence_token_ids(sid)
+            add = weight / len(tokens) if use_weights and tokens else weight
+            sentence_visits[sid] = sentence_visits.get(sid, 0.0) + add
+
+    for sentence_id, weight in s_copy.items():
+        if not sentence_ok(sentence_id):
+            continue
+        for sid2, jaccard in graph.similar_sentences(sentence_id, top_k=10):
+            if not sentence_ok(sid2):
+                continue
+            j = jaccard
+            if content_dependent_j and v_W:
+                tokens2 = graph.sentence_token_ids(sid2)
+                if tokens2:
+                    focus = sum(v_W.get(w, 0.0) for w in tokens2) / len(tokens2)
+                    j = j * (1.0 + focus)
+            sentence_visits[sid2] = sentence_visits.get(sid2, 0.0) + weight * j
+        tokens = graph.sentence_token_ids(sentence_id)
+        per_word = (weight / len(tokens)) if use_weights and tokens else weight
+        for wid in tokens:
+            word_visits[wid] = word_visits.get(wid, 0.0) + per_word
+
+    if use_weights:
+        for word_id, mass in w_copy.items():
+            next_counts = graph.next_word_counts(word_id)
+            if not next_counts:
+                continue
+            total = sum(next_counts.values())
+            if total <= 0:
+                continue
+            for next_id, count in next_counts.items():
+                word_visits[next_id] = word_visits.get(next_id, 0.0) + mass * (count / total)
+
+    if use_cooccurrence:
+        for word_id, mass in w_copy.items():
+            co_list = graph.cooccurring_words(word_id)
+            if not co_list:
+                continue
+            add = mass / len(co_list)
+            for co_id in co_list:
+                word_visits[co_id] = word_visits.get(co_id, 0.0) + add
+
+    if use_backward:
+        for w_prime, mass in list(word_visits.items()):
+            prev_counts = graph.prev_word_counts(w_prime)
+            if not prev_counts:
+                continue
+            total = sum(prev_counts.values())
+            if total <= 0:
+                continue
+            for w_prev, count in prev_counts.items():
+                word_visits[w_prev] = word_visits.get(w_prev, 0.0) + mass * (count / total)
+
+    if overlay:
+        _apply_propagation_overlay(word_visits, sentence_visits, w_copy, s_copy, overlay)
+
+    return word_visits, sentence_visits
+
+
+def _apply_propagation_overlay(
+    word_visits: dict[int, float],
+    sentence_visits: dict[int, float],
+    w_copy: dict[int, float],
+    s_copy: dict[int, float],
+    overlay: dict[str, Any],
+) -> None:
+    """In-place: add overlay boosts to word_visits and sentence_visits."""
+    ww = overlay.get("word_word") or {}
+    ss = overlay.get("sentence_sentence") or {}
+    for key, boost in ww.items():
+        if isinstance(boost, (int, float)) and isinstance(key, str) and "|" in key:
+            parts = key.split("|", 1)
+            if len(parts) == 2:
+                try:
+                    w, w2 = int(parts[0]), int(parts[1])
+                    m = w_copy.get(w, 0.0)
+                    if m:
+                        word_visits[w2] = word_visits.get(w2, 0.0) + m * float(boost)
+                except ValueError:
+                    pass
+    for key, boost in ss.items():
+        if isinstance(boost, (int, float)) and isinstance(key, str) and "|" in key:
+            parts = key.split("|", 1)
+            if len(parts) == 2:
+                try:
+                    s, s2 = int(parts[0]), int(parts[1])
+                    m = s_copy.get(s, 0.0)
+                    if m:
+                        sentence_visits[s2] = sentence_visits.get(s2, 0.0) + m * float(boost)
+                except ValueError:
+                    pass
+
+
+def load_propagation_overlay(path: Path | None) -> dict[str, Any]:
+    """Load propagation overlay from JSON: word_word, sentence_sentence keyed by 'w|w2' / 's|s2'."""
+    if not path or not Path(path).exists():
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        "word_word": data.get("word_word") or {},
+        "sentence_sentence": data.get("sentence_sentence") or {},
+    }
+
+
+def save_propagation_overlay(path: Path, overlay: dict[str, Any]) -> None:
+    """Save propagation overlay to JSON."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(overlay, f, indent=0)
+
+
+def run_layers(
+    v_W_0: dict[int, float],
+    v_S_0: dict[int, float],
+    graph: CorpusGraph,
+    num_hops: int,
+    normalize: bool,
+    genre_id: str | list[str] | None,
+    encoded_index: dict[int, dict[str, Any]] | None,
+    use_weights: bool = True,
+    use_cooccurrence: bool = False,
+    use_backward: bool = False,
+    content_dependent_j: bool = False,
+    overlay: dict[str, Any] | None = None,
+    converge_tol: float | None = None,
+    max_converge_iters: int = 50,
+) -> tuple[dict[int, float], dict[int, float]]:
+    """
+    Run propagation steps. If converge_tol is set, iterate until L1 change < tol or max_converge_iters.
+    Else run num_hops - 1 steps. After each step optionally L1-normalize.
+    """
+    v_W = dict(v_W_0)
+    v_S = dict(v_S_0)
+    n_steps = max(0, num_hops - 1)
+    if converge_tol is not None and converge_tol > 0:
+        for _ in range(max_converge_iters):
+            v_W_old = dict(v_W)
+            v_S_old = dict(v_S)
+            v_W, v_S = propagation_layer(
+                v_W, v_S, graph, genre_id, encoded_index, use_weights,
+                use_cooccurrence=use_cooccurrence,
+                use_backward=use_backward,
+                content_dependent_j=content_dependent_j,
+                overlay=overlay,
+            )
+            if normalize:
+                v_W = normalize_visit_dict(v_W)
+                v_S = normalize_visit_dict(v_S)
+            dw = sum(abs(v_W.get(k, 0) - v_W_old.get(k, 0)) for k in set(v_W) | set(v_W_old))
+            ds = sum(abs(v_S.get(k, 0) - v_S_old.get(k, 0)) for k in set(v_S) | set(v_S_old))
+            if dw + ds < converge_tol:
+                break
+    else:
+        for _ in range(n_steps):
+            v_W, v_S = propagation_layer(
+                v_W, v_S, graph, genre_id, encoded_index, use_weights,
+                use_cooccurrence=use_cooccurrence,
+                use_backward=use_backward,
+                content_dependent_j=content_dependent_j,
+                overlay=overlay,
+            )
+            if normalize:
+                v_W = normalize_visit_dict(v_W)
+                v_S = normalize_visit_dict(v_S)
+    return v_W, v_S
+
+
+def output_head(
+    v_W: dict[int, float],
+    dict_term_ids: set[int] | None = None,
+    dict_boost: float = 0.0,
+) -> dict[int, float]:
+    """
+    Optionally reweight v_W by boosting dictionary terms, then L1-normalize to distribution p.
+    dict_boost: additive factor for terms in dict_term_ids, e.g. reweight[w] = v_W[w] * (1 + dict_boost).
+    """
+    if not dict_term_ids or dict_boost <= 0:
+        return normalize_visit_dict(v_W)
+    reweighted = {}
+    for w, val in v_W.items():
+        reweighted[w] = val * (1.0 + dict_boost) if w in dict_term_ids else val
+    return normalize_visit_dict(reweighted)
 
 
 def traverse_loops(
@@ -269,6 +526,120 @@ def refine_answer(
     return "\n".join(parts[:max_total])
 
 
+def _sample_from_distribution(p: dict[int, float]) -> int | None:
+    """Sample one word ID from distribution p (keys = word_id, values = probability). Returns None if empty."""
+    if not p:
+        return None
+    population = list(p.keys())
+    weights = [p[k] for k in population]
+    return random.choices(population, weights=weights, k=1)[0]
+
+
+def generate_autoregressive(
+    query: str,
+    concept_bundle: dict[str, Any],
+    config: dict[str, Any],
+    graph: CorpusGraph,
+    word_to_id: dict[str, int],
+    id_to_word: dict[int, str],
+    encoded_index: dict[int, dict[str, Any]],
+    genre_id: str | list[str],
+) -> str:
+    """
+    Generate response token-by-token: embed(context) -> layers -> softmax(v_W) -> sample next -> append.
+    Stops at max_tokens or when a sentence-ending token (., ?, !) is sampled if configured.
+    """
+    max_tokens = int(config.get("autoregressive_max_tokens", 80))
+    context_window = int(config.get("autoregressive_context_window", 10))
+    stop_at_sentence_end = config.get("autoregressive_stop_at_sentence_end", True)
+    num_hops = int(config.get("attention_loop_hops", 4))
+    use_weights = config.get("attention_loop_use_weights", True)
+    use_normalized = config.get("use_normalized_layers", True)
+    include_definitions = config.get("include_definitions_in_response", False)
+    use_cooccurrence = config.get("use_propagation_cooccurrence", False)
+    use_backward = config.get("use_propagation_backward", False)
+    content_dependent_j = config.get("use_content_dependent_j", False)
+    overlay = {}  # generate_autoregressive does not load overlay by default (no data_path in signature)
+    output_dict_boost = float(config.get("output_dict_boost", 0.0))
+    dict_term_ids: set[int] = set()
+    if concept_bundle.get("terms"):
+        dict_term_ids = {word_to_id[t] for t in (concept_bundle.get("terms") or []) if t in word_to_id}
+
+    stop_ids: set[int] = set()
+    for t in (".", "?", "!"):
+        if t in word_to_id:
+            stop_ids.add(word_to_id[t])
+
+    # Initial context = query token IDs
+    query_tokens = tokenize(query) if (query or "").strip() else []
+    context = list(dict.fromkeys(word_to_id[t] for t in query_tokens if t in word_to_id))
+    generated_tokens: list[int] = []
+
+    for step in range(max_tokens):
+        if not context:
+            # No context: use concept terms only for embed
+            query_token_ids_for_embed: list[int] | None = None
+        elif step == 0:
+            query_token_ids_for_embed = context
+        else:
+            query_token_ids_for_embed = context[-context_window:] if len(context) >= context_window else context
+
+        v_W_0, v_S_0 = embed_anchor(
+            concept_bundle, graph, word_to_id, query_token_ids=query_token_ids_for_embed
+        )
+        if not v_W_0 and not v_S_0:
+            break
+        v_W, v_S = run_layers(
+            v_W_0,
+            v_S_0,
+            graph,
+            num_hops=num_hops,
+            normalize=use_normalized,
+            genre_id=genre_id,
+            encoded_index=encoded_index,
+            use_weights=use_weights,
+            use_cooccurrence=use_cooccurrence,
+            use_backward=use_backward,
+            content_dependent_j=content_dependent_j,
+            overlay=overlay if overlay else None,
+        )
+        p = output_head(v_W, dict_term_ids=dict_term_ids if dict_term_ids else None, dict_boost=output_dict_boost)
+        next_id = _sample_from_distribution(p)
+        if next_id is None:
+            # Fallback: sample from P(·|last token) if we have context
+            if context:
+                last = context[-1]
+                next_counts = graph.next_word_counts(last)
+                if next_counts:
+                    total = sum(next_counts.values())
+                    if total > 0:
+                        population = list(next_counts.keys())
+                        weights = [next_counts[k] for k in population]
+                        next_id = random.choices(population, weights=weights, k=1)[0]
+            if next_id is None:
+                break
+        context.append(next_id)
+        generated_tokens.append(next_id)
+        if stop_at_sentence_end and next_id in stop_ids:
+            break
+
+    parts: list[str] = []
+    if include_definitions and concept_bundle.get("terms"):
+        definitions = concept_bundle.get("definitions") or {}
+        terms_set = set(concept_bundle.get("terms") or [])
+        for term in terms_set:
+            if term in definitions:
+                defn = definitions[term]
+                text = defn[0] if isinstance(defn, list) and defn else (defn if isinstance(defn, str) else "")
+                if text:
+                    parts.append(f"{term}: {str(text).strip()[:500]}")
+        if parts:
+            parts.append("")
+    out_words = [id_to_word.get(i, "") for i in generated_tokens]
+    parts.append(" ".join(w for w in out_words if w).strip())
+    return "\n".join(parts).strip() or "No response generated."
+
+
 def _next_span_sentence_ids(
     top_sentence_ids: list[int],
     graph: CorpusGraph,
@@ -309,17 +680,26 @@ def run(
         from . import wire
         engine = wire.get_engine()
     concept_bundle = retrieval.get_concept_bundle(engine, query)
-    graph = load_corpus_graph(data_path)
-    if graph is None:
-        return None
-    vocab_path = data_path / "corpus" / "vocab.json"
-    word_to_id, id_to_word = load_vocab(vocab_path)
-    if not word_to_id:
-        return None
-    encoded_path = data_path / "corpus" / "encoded_sentences.jsonl"
-    encoded_index = _load_encoded_index(encoded_path)
-    if not encoded_index:
-        return None
+    cached = None
+    try:
+        from .corpus_cache import get_cached_corpus_data
+        cached = get_cached_corpus_data(data_path)
+    except ImportError:
+        pass
+    if cached is not None:
+        graph, word_to_id, id_to_word, encoded_index = cached
+    else:
+        graph = load_corpus_graph(data_path)
+        if graph is None:
+            return None
+        vocab_path = data_path / "corpus" / "vocab.json"
+        word_to_id, id_to_word = load_vocab(vocab_path)
+        if not word_to_id:
+            return None
+        encoded_path = data_path / "corpus" / "encoded_sentences.jsonl"
+        encoded_index = _load_encoded_index(encoded_path)
+        if not encoded_index:
+            return None
 
     genre_ids_cfg = config.get("genre_ids")
     genre_id: str | list[str] = (
@@ -343,25 +723,64 @@ def run(
         if not query_token_ids:
             query_token_ids = None
 
-    activated_word_ids, activated_sentence_ids = activate(
+    use_autoregressive = config.get("use_autoregressive_generation", False)
+    if use_autoregressive:
+        return generate_autoregressive(
+            query, concept_bundle, config, graph, word_to_id, id_to_word, encoded_index, genre_id
+        )
+
+    # One-shot path: refactored embed -> run_layers (with optional norm) -> pattern -> refine
+    use_normalized_layers = config.get("use_normalized_layers", True)
+    use_cooccurrence = config.get("use_propagation_cooccurrence", False)
+    use_backward = config.get("use_propagation_backward", False)
+    content_dependent_j = config.get("use_content_dependent_j", False)
+    converge_tol = config.get("propagation_converge_tol")
+    max_converge_iters = int(config.get("propagation_max_converge_iters", 50))
+    overlay_path = config.get("propagation_overlay_path")
+    if overlay_path and data_path:
+        p = Path(overlay_path)
+        overlay_path = (data_path / overlay_path) if not p.is_absolute() else p
+    else:
+        overlay_path = Path(overlay_path) if overlay_path else None
+    overlay = load_propagation_overlay(overlay_path) if overlay_path else {}
+    if overlay and not (overlay.get("word_word") or overlay.get("sentence_sentence")):
+        overlay = {}
+
+    v_W_0, v_S_0 = embed_anchor(
         concept_bundle, graph, word_to_id, query_token_ids=query_token_ids
     )
     word_visits: dict[int, float] = {}
     sentence_visits: dict[int, float] = {}
     for _ in range(max_iter):
-        wv, sv = traverse_loops(
-            activated_word_ids,
-            activated_sentence_ids,
+        v_W, v_S = run_layers(
+            v_W_0,
+            v_S_0,
             graph,
             num_hops=num_hops,
+            normalize=use_normalized_layers,
             genre_id=genre_id,
             encoded_index=encoded_index,
             use_weights=use_weights,
+            use_cooccurrence=use_cooccurrence,
+            use_backward=use_backward,
+            content_dependent_j=content_dependent_j,
+            overlay=overlay if overlay else None,
+            converge_tol=converge_tol,
+            max_converge_iters=max_converge_iters,
         )
-        for k, v in wv.items():
+        for k, v in v_W.items():
             word_visits[k] = word_visits.get(k, 0.0) + v
-        for k, v in sv.items():
+        for k, v in v_S.items():
             sentence_visits[k] = sentence_visits.get(k, 0.0) + v
+
+    output_dict_boost = float(config.get("output_dict_boost", 0.0))
+    if output_dict_boost > 0 and concept_bundle.get("terms"):
+        terms_set = set((concept_bundle.get("terms") or []))
+        dict_term_ids = {word_to_id[t] for t in terms_set if t in word_to_id}
+        if dict_term_ids:
+            for w in dict_term_ids:
+                if w in word_visits:
+                    word_visits[w] = word_visits[w] * (1.0 + output_dict_boost)
 
     use_graph_vectors = config.get("use_graph_vectors", False)
     if use_graph_vectors:

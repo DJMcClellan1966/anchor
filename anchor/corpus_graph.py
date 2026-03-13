@@ -184,6 +184,11 @@ class CorpusGraph:
             int(k): [[int(p[0]), float(p[1])] for p in v]
             for k, v in data.get("sentence_similar", {}).items()
         }
+        self._word_prev: dict[int, dict[int, int]] = {}
+        for w, next_counts in self._word_next.items():
+            for w_next, c in next_counts.items():
+                prev_dict = self._word_prev.setdefault(w_next, {})
+                prev_dict[w] = prev_dict.get(w, 0) + c
         ctx_data = data.get("context_to_sentences") or {}
         self._context_length = int(ctx_data.get("context_length", 5))
         self._context_index = dict(ctx_data.get("index", {}))
@@ -211,6 +216,10 @@ class CorpusGraph:
     def next_word_counts(self, word_id: int) -> dict[int, int]:
         """For a word_id, dict of next_word_id -> count."""
         return dict(self._word_next.get(word_id, {}))
+
+    def prev_word_counts(self, word_id: int) -> dict[int, int]:
+        """For a word_id, dict of prev_word_id -> count (words that precede this one in corpus)."""
+        return dict(self._word_prev.get(word_id, {}))
 
     def sentence_token_ids(self, sentence_id: int) -> list[int]:
         """Token ID sequence for a sentence."""

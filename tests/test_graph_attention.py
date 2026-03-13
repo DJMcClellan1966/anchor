@@ -279,6 +279,212 @@ class TestNextSpan:
         assert 2 not in ids
 
 
+class TestNormalizeVisitDict:
+    def test_normalizes_to_sum_one(self):
+        d = {1: 1.0, 2: 2.0, 3: 1.0}
+        out = graph_attention.normalize_visit_dict(d)
+        assert abs(sum(out.values()) - 1.0) < 1e-9
+        assert out[1] == 0.25 and out[2] == 0.5 and out[3] == 0.25
+
+    def test_empty_or_zero_sum_unchanged(self):
+        assert graph_attention.normalize_visit_dict({}) == {}
+        assert graph_attention.normalize_visit_dict({1: 0.0, 2: 0.0}) == {1: 0.0, 2: 0.0}
+
+
+class TestEmbedAnchor:
+    def test_returns_initial_v_W_and_v_S_from_terms_and_query_token_ids(self):
+        concept_bundle = {"terms": ["hello", "world"], "definitions": {}}
+        word_to_id = {"hello": 1, "world": 2}
+        data = {
+            "sentence_words": {"0": [1, 2], "1": [1, 2]},
+            "word_cooccurrence": {},
+            "word_next": {},
+            "sentence_similar": {},
+        }
+        graph = CorpusGraph(data)
+        v_W_0, v_S_0 = graph_attention.embed_anchor(
+            concept_bundle, graph, word_to_id, query_token_ids=None
+        )
+        assert v_W_0 == {1: 1.0, 2: 1.0}
+        assert v_S_0 == {0: 1.0, 1: 1.0}
+
+    def test_embed_anchor_with_query_token_ids_includes_them(self):
+        concept_bundle = {"terms": [], "definitions": {}}
+        word_to_id = {"a": 1, "b": 2}
+        data = {
+            "sentence_words": {"0": [1, 2]},
+            "word_cooccurrence": {},
+            "word_next": {},
+            "sentence_similar": {},
+        }
+        graph = CorpusGraph(data)
+        v_W_0, v_S_0 = graph_attention.embed_anchor(
+            concept_bundle, graph, word_to_id, query_token_ids=[1, 2]
+        )
+        assert 1 in v_W_0 and 2 in v_W_0
+        assert 0 in v_S_0
+
+
+class TestPropagationLayer:
+    def test_use_cooccurrence_spreads_to_cooccurring_words(self):
+        data = {
+            "sentence_words": {"0": [1, 2, 3]},
+            "word_cooccurrence": {"1": [2, 3], "2": [1, 3], "3": [1, 2]},
+            "word_next": {},
+            "sentence_similar": {},
+        }
+        graph = CorpusGraph(data)
+        v_W = {1: 1.0}
+        v_S = {0: 1.0}
+        v_W_out, v_S_out = graph_attention.propagation_layer(
+            v_W, v_S, graph, genre_id=None, encoded_index=None, use_weights=False,
+            use_cooccurrence=True, use_backward=False,
+        )
+        assert 2 in v_W_out and 3 in v_W_out
+        assert v_W_out.get(2, 0) > 0 and v_W_out.get(3, 0) > 0
+
+    def test_use_backward_spreads_via_prev_word(self):
+        data = {
+            "sentence_words": {"0": [1, 2]},
+            "word_cooccurrence": {},
+            "word_next": {"1": {"2": 1}},
+            "sentence_similar": {},
+        }
+        graph = CorpusGraph(data)
+        v_W = {2: 1.0}
+        v_S = {}
+        v_W_out, _ = graph_attention.propagation_layer(
+            v_W, v_S, graph, genre_id=None, encoded_index=None, use_weights=False,
+            use_cooccurrence=False, use_backward=True,
+        )
+        assert 1 in v_W_out
+        assert v_W_out[1] > 0
+
+
+class TestRunLayers:
+    def test_run_layers_with_normalize_true_yields_distributions(self):
+        data = {
+            "sentence_words": {"0": [1, 2], "1": [2, 3]},
+            "word_cooccurrence": {},
+            "word_next": {"1": {"2": 1}, "2": {"3": 1}},
+            "sentence_similar": {"0": [[1, 0.5]], "1": [[0, 0.5]]},
+        }
+        graph = CorpusGraph(data)
+        v_W_0 = {1: 1.0}
+        v_S_0 = {0: 1.0}
+        v_W, v_S = graph_attention.run_layers(
+            v_W_0, v_S_0, graph, num_hops=3, normalize=True,
+            genre_id=None, encoded_index=None, use_weights=True,
+        )
+        total_w = sum(v_W.values())
+        total_s = sum(v_S.values())
+        assert abs(total_w - 1.0) < 1e-6 or total_w == 0
+        assert abs(total_s - 1.0) < 1e-6 or total_s == 0
+
+
+class TestOutputHead:
+    def test_returns_distribution_sum_one(self):
+        v_W = {1: 2.0, 2: 4.0, 3: 4.0}
+        p = graph_attention.output_head(v_W)
+        assert abs(sum(p.values()) - 1.0) < 1e-9
+        assert 1 in p and 2 in p and 3 in p
+
+    def test_empty_input_returns_empty(self):
+        assert graph_attention.output_head({}) == {}
+
+    def test_output_head_dict_boost_favors_dict_terms(self):
+        v_W = {1: 1.0, 2: 1.0, 3: 1.0}
+        p = graph_attention.output_head(v_W, dict_term_ids={1, 2}, dict_boost=1.0)
+        assert abs(sum(p.values()) - 1.0) < 1e-9
+        assert p[1] > p[3] and p[2] > p[3]
+
+
+class TestGenerateAutoregressive:
+    def test_returns_non_empty_string_with_mock_graph(self):
+        concept_bundle = {"terms": [], "definitions": {}}
+        word_to_id = {"a": 1, "b": 2}
+        id_to_word = {1: "a", 2: "b"}
+        data = {
+            "sentence_words": {"0": [1, 2]},
+            "word_cooccurrence": {},
+            "word_next": {"1": {"2": 1}},
+            "sentence_similar": {},
+        }
+        graph = CorpusGraph(data)
+        encoded_index = {0: {"text": "a b", "genre_id": "general"}}
+        config = {
+            "autoregressive_max_tokens": 5,
+            "autoregressive_context_window": 10,
+            "autoregressive_stop_at_sentence_end": False,
+            "attention_loop_hops": 2,
+            "attention_loop_use_weights": True,
+            "use_normalized_layers": True,
+            "include_definitions_in_response": False,
+        }
+        out = graph_attention.generate_autoregressive(
+            "a", concept_bundle, config, graph,
+            word_to_id, id_to_word, encoded_index, genre_id="general",
+        )
+        assert isinstance(out, str)
+        assert out.strip()
+
+    def test_stops_at_max_tokens(self):
+        concept_bundle = {"terms": [], "definitions": {}}
+        word_to_id = {"x": 1, "y": 2}
+        id_to_word = {1: "x", 2: "y"}
+        data = {
+            "sentence_words": {"0": [1, 2]},
+            "word_cooccurrence": {},
+            "word_next": {"1": {"2": 1}, "2": {"1": 1}},
+            "sentence_similar": {},
+        }
+        graph = CorpusGraph(data)
+        encoded_index = {0: {"text": "x y", "genre_id": "general"}}
+        config = {
+            "autoregressive_max_tokens": 2,
+            "autoregressive_context_window": 10,
+            "autoregressive_stop_at_sentence_end": False,
+            "attention_loop_hops": 2,
+            "attention_loop_use_weights": True,
+            "use_normalized_layers": True,
+            "include_definitions_in_response": False,
+        }
+        out = graph_attention.generate_autoregressive(
+            "x", concept_bundle, config, graph,
+            word_to_id, id_to_word, encoded_index, genre_id="general",
+        )
+        words = out.split()
+        assert len(words) <= 3  # at most 2 generated + possible punctuation
+
+    def test_stops_at_sentence_end_when_configured(self):
+        concept_bundle = {"terms": [], "definitions": {}}
+        word_to_id = {"a": 1, "b": 2, ".": 3}
+        id_to_word = {1: "a", 2: "b", 3: "."}
+        data = {
+            "sentence_words": {"0": [1, 2, 3]},
+            "word_cooccurrence": {},
+            "word_next": {"1": {"2": 1}, "2": {"3": 1}},
+            "sentence_similar": {},
+        }
+        graph = CorpusGraph(data)
+        encoded_index = {0: {"text": "a b .", "genre_id": "general"}}
+        config = {
+            "autoregressive_max_tokens": 20,
+            "autoregressive_context_window": 10,
+            "autoregressive_stop_at_sentence_end": True,
+            "attention_loop_hops": 2,
+            "attention_loop_use_weights": True,
+            "use_normalized_layers": True,
+            "include_definitions_in_response": False,
+        }
+        out = graph_attention.generate_autoregressive(
+            "a", concept_bundle, config, graph,
+            word_to_id, id_to_word, encoded_index, genre_id="general",
+        )
+        assert isinstance(out, str)
+        assert out.strip()
+
+
 class TestRun:
     def test_returns_none_when_data_path_missing(self):
         out = graph_attention.run("q", None, {}, None)
@@ -402,4 +608,49 @@ class TestRun:
         }
         out = graph_attention.run("hello", MockEngineWithTerms(), config, tmp_path)
         assert out is not None
+        assert out.strip()
+
+    def test_run_with_use_autoregressive_generation_returns_string(self, tmp_path: Path):
+        """When use_autoregressive_generation is True, run() uses autoregressive path and returns a string."""
+        corpus = tmp_path / "corpus"
+        corpus.mkdir(exist_ok=True)
+        with open(corpus / "vocab.json", "w", encoding="utf-8") as f:
+            json.dump(
+                {"word_to_id": {"hello": 0, "world": 1}, "id_to_word": {"0": "hello", "1": "world"}},
+                f,
+            )
+        with open(corpus / "encoded_sentences.jsonl", "w", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {"sentence_id": 0, "genre_id": "general", "text": "Hello world.", "token_ids": [0, 1]}
+                )
+                + "\n"
+            )
+        graph = {
+            "sentence_words": {"0": [0, 1]},
+            "word_cooccurrence": {"0": [1], "1": [0]},
+            "word_next": {"0": {"1": 1}},
+            "sentence_similar": {"0": []},
+        }
+        with open(corpus / "graph.json", "w", encoding="utf-8") as f:
+            json.dump(graph, f)
+
+        class MockEngine:
+            @staticmethod
+            def get_context_for_description(q):
+                return {"concepts": [], "definitions": {}}
+
+        config = {
+            "default_genre_id": "general",
+            "use_autoregressive_generation": True,
+            "autoregressive_max_tokens": 5,
+            "autoregressive_context_window": 10,
+            "autoregressive_stop_at_sentence_end": False,
+            "attention_loop_hops": 2,
+            "attention_loop_use_weights": True,
+            "use_normalized_layers": True,
+        }
+        out = graph_attention.run("hello", MockEngine(), config, tmp_path)
+        assert out is not None
+        assert isinstance(out, str)
         assert out.strip()

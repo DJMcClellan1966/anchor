@@ -70,9 +70,15 @@ def _generate_graph_attention(
             vocab_size = len(word_to_id) if isinstance(word_to_id, dict) else 0
     except Exception:
         pass
+    generation_mode = "autoregressive" if config.get("use_autoregressive_generation", False) else "one_shot"
     return (
         out.strip(),
-        {"generator_actually_used": "graph_attention", "graph_sentences": graph_sentences, "vocab_size": vocab_size},
+        {
+            "generator_actually_used": "graph_attention",
+            "generation_mode": generation_mode,
+            "graph_sentences": graph_sentences,
+            "vocab_size": vocab_size,
+        },
     )
 
 
