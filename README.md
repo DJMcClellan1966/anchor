@@ -206,6 +206,20 @@ Shortest path to a successful graph run:
 
 You should see `Generator: graph_attention (graph: N sentences, vocab: M)` and a response that uses your corpus. Run `python run_anchor.py --check` to verify setup before querying.
 
+### Evidence engine and agent
+
+The **evidence engine** evaluates a claim against the corpus and returns a structured result (verdict: supported / divided / silent, support sentences, contradict sentences) without prose generation, dictionary, or critic. The **agent** runs the evidence engine on one or many claims and produces a report.
+
+**No dictionary required:** The evidence path builds the concept bundle from the tokenized claim and corpus vocab, so it never blocks on an external dictionary.
+
+Run from the anchor folder:
+
+```bash
+python run_evidence_agent.py --claim "your claim here" --data path/to/corpus
+```
+
+Use `--claims-file path/to/claims.txt` (one claim per line) to evaluate multiple claims; each report is printed and a summary (N supported, M divided, K silent) is included. Use `--verbose` to show side details. Data path can be omitted if `align_data_dir` is set in config.
+
 ## Features (all on by default)
 
 When the required paths/data exist, these are used automatically. Set to `false` in **config/anchor.json** to turn off:
@@ -278,12 +292,15 @@ Env overrides: `ANCHOR_DICTIONARY_PATH`, `ANCHOR_DATA_DIR`.
 - **anchor/corpus_graph.py** – Word/sentence graph build and load; by-product transition matrix (Option C)
 - **anchor/next_sentence.py** – Next-sentence retrieval from graph (Option C)
 - **anchor/next_token.py** – Retrieval + bigram hybrid next-token distribution and sampling
-- **anchor/graph_attention.py** – Graph attention loop: activate from query, traverse with optional edge weights and next-word propagation, detect pattern (primary + secondary path groups), optional next-span from similar sentences, refine answer (grounded)
+- **anchor/graph_attention.py** – Graph attention loop: activate from query, traverse with optional edge weights and next-word propagation, detect pattern (primary + secondary path groups), optional next-span from similar sentences, refine answer (grounded); also exposes `run_evidence()` for the evidence engine
+- **anchor/evidence_engine.py** – Evidence engine: evaluate a claim against the corpus; returns EvidenceResult (verdict, support_sentences, contradict_sentences, sides) without prose or dictionary
+- **anchor/agent.py** – Agent: run evidence engine on one or many claims; returns AgentReport(s) with optional summary
 - **anchor/corpus_model.py** – Load and sample from by-product corpus model (1-layer LM)
 - **anchor/webster_engine.py** – Webster JSON adapter: load word→definition JSON, implement `get_context_for_description` for concept bundle and critic
 - **anchor/wire.py** – Load config and dictionary (Basis or Webster; single place that touches external repos)
 - **anchor/corpus_cache.py** – Cache for graph, vocab, and encoded index (speeds up repeated queries in the same session)
 - **run_anchor.py** – CLI entry point
+- **run_evidence_agent.py** – Evidence engine + agent CLI: `--claim` / `--claims-file`, `--data`; no dictionary required
 - **run_anchor_gui.py** – Tkinter GUI (question + response; Ctrl+Enter to submit)
 - **scripts/build_corpus.py** – Build combined corpus with genre tags (from local files)
 - **scripts/build_corpus_from_hf.py** – Build corpus from Hugging Face datasets (OpenSubtitles, C4, etc.; requires `datasets`)

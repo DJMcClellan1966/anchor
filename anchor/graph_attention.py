@@ -870,6 +870,219 @@ def _next_span_sentence_ids(
     return result
 
 
+def run_evidence(
+    query: str,
+    engine: Any,
+    config: dict[str, Any],
+    data_path: Path | None = None,
+    concept_bundle: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """
+    Evidence-only path: load, activate, propagate, detect_pattern (two groups), return
+    structured verdict/support/contradict/sides. No refine_answer, no critic.
+    If concept_bundle is None, build from tokenized query + loaded vocab (no dictionary).
+    Returns (evidence_dict, run_extras) or None if data missing.
+    """
+    if not data_path or not data_path.exists():
+        return None
+    cached = None
+    try:
+        from .corpus_cache import get_cached_corpus_data
+        cached = get_cached_corpus_data(data_path)
+    except ImportError:
+        pass
+    if cached is not None:
+        graph, word_to_id, id_to_word, encoded_index = cached
+    else:
+        graph = load_corpus_graph(data_path)
+        if graph is None:
+            return None
+        vocab_path = data_path / "corpus" / "vocab.json"
+        word_to_id, id_to_word = load_vocab(vocab_path)
+        if not word_to_id:
+            return None
+        encoded_path = data_path / "corpus" / "encoded_sentences.jsonl"
+        encoded_index = _load_encoded_index(encoded_path)
+        if not encoded_index:
+            return None
+
+    if concept_bundle is None:
+        terms = tokenize(query) if (query or "").strip() else []
+        concept_bundle = {"terms": list(terms), "definitions": {}}
+
+    genre_ids_cfg = config.get("genre_ids")
+    genre_id: str | list[str] = (
+        genre_ids_cfg if isinstance(genre_ids_cfg, list) and genre_ids_cfg
+        else config.get("default_genre_id", "general")
+    )
+    num_hops = int(config.get("attention_loop_hops", 4))
+    top_k = int(config.get("attention_loop_top_k", 10))
+    use_weights = config.get("attention_loop_use_weights", True)
+    max_iter = max(1, int(config.get("attention_loop_max_iter", 1)))
+
+    query_token_ids: list[int] | None = None
+    if config.get("use_query_token_ids", True) and (query or "").strip():
+        query_token_ids = list(
+            dict.fromkeys(
+                word_to_id[t] for t in tokenize(query) if t in word_to_id
+            )
+        )
+        if not query_token_ids:
+            query_token_ids = None
+
+    use_normalized_layers = config.get("use_normalized_layers", True)
+    use_cooccurrence = config.get("use_propagation_cooccurrence", False)
+    use_backward = config.get("use_propagation_backward", False)
+    content_dependent_j = config.get("use_content_dependent_j", False)
+    converge_tol = config.get("propagation_converge_tol")
+    max_converge_iters = int(config.get("propagation_max_converge_iters", 50))
+    overlay_path = config.get("propagation_overlay_path")
+    if overlay_path and data_path:
+        p = Path(overlay_path)
+        overlay_path = (data_path / overlay_path) if not p.is_absolute() else p
+    else:
+        overlay_path = Path(overlay_path) if overlay_path else None
+    overlay = load_propagation_overlay(overlay_path) if overlay_path else {}
+
+    use_def_words = config.get("use_definition_words_in_activation", True)
+    def_weight = float(config.get("definition_word_weight", 0.5))
+    use_category_filter = config.get("use_category_filter", False)
+    active_categories: set[int] | None = None
+    if use_category_filter and graph.has_category_data():
+        initial_words: set[int] = set()
+        for t in (concept_bundle.get("terms") or []):
+            if isinstance(t, str) and t in word_to_id:
+                initial_words.add(word_to_id[t])
+        if query_token_ids:
+            initial_words.update(query_token_ids)
+        active_categories = {c for w in initial_words if (c := graph.word_category(w)) is not None}
+        if not active_categories:
+            active_categories = None
+
+    v_W_0, v_S_0 = embed_anchor(
+        concept_bundle, graph, word_to_id, query_token_ids=query_token_ids,
+        use_definition_words=use_def_words, definition_word_weight=def_weight,
+        active_categories=active_categories,
+    )
+    use_stationary_boost = config.get("use_stationary_boost", False)
+    pi: dict[int, float] | None = None
+    if use_stationary_boost and data_path:
+        cache_key = str(data_path)
+        if cache_key not in _stationary_cache:
+            _stationary_cache[cache_key] = stationary_distribution(graph)
+        pi = _stationary_cache[cache_key]
+        if pi:
+            top_k_pi = int(config.get("stationary_boost_top_k", 10))
+            alpha = float(config.get("stationary_boost_alpha", 0.3))
+            sorted_pi = sorted(pi.items(), key=lambda x: -x[1])[:top_k_pi]
+            for wid, mass in sorted_pi:
+                v_W_0[wid] = v_W_0.get(wid, 0) + alpha * mass
+                for sid in graph.sentences_containing_word(wid):
+                    v_S_0[sid] = v_S_0.get(sid, 0) + alpha * mass
+
+    word_visits: dict[int, float] = {}
+    sentence_visits: dict[int, float] = {}
+    for _ in range(max_iter):
+        v_W, v_S = run_layers(
+            v_W_0,
+            v_S_0,
+            graph,
+            num_hops=num_hops,
+            normalize=use_normalized_layers,
+            genre_id=genre_id,
+            encoded_index=encoded_index,
+            use_weights=use_weights,
+            use_cooccurrence=use_cooccurrence,
+            use_backward=use_backward,
+            content_dependent_j=content_dependent_j,
+            overlay=overlay if overlay else None,
+            converge_tol=converge_tol,
+            max_converge_iters=max_converge_iters,
+            active_categories=active_categories,
+        )
+        for k, v in v_W.items():
+            word_visits[k] = word_visits.get(k, 0.0) + v
+        for k, v in v_S.items():
+            sentence_visits[k] = sentence_visits.get(k, 0.0) + v
+
+    output_dict_boost = float(config.get("output_dict_boost", 0.0))
+    if output_dict_boost > 0 and concept_bundle.get("terms"):
+        terms_set = set((concept_bundle.get("terms") or []))
+        dict_term_ids = {word_to_id[t] for t in terms_set if t in word_to_id}
+        if dict_term_ids:
+            for w in dict_term_ids:
+                if w in word_visits:
+                    word_visits[w] = word_visits[w] * (1.0 + output_dict_boost)
+
+    if config.get("use_voice_of_corpus", False) and data_path and pi is None:
+        cache_key = str(data_path)
+        if cache_key not in _stationary_cache:
+            _stationary_cache[cache_key] = stationary_distribution(graph)
+        pi = _stationary_cache[cache_key]
+    if config.get("use_voice_of_corpus", False) and pi:
+        voice_alpha = float(config.get("voice_alpha", 0.2))
+        voice_top_k = int(config.get("voice_top_k", 20))
+        sorted_pi = sorted(pi.items(), key=lambda x: -x[1])
+        if voice_top_k > 0:
+            sorted_pi = sorted_pi[:voice_top_k]
+        if sorted_pi:
+            total = sum(m for _, m in sorted_pi)
+            if total > 0:
+                pi_norm = {w: m / total for w, m in sorted_pi}
+                for w, m in pi_norm.items():
+                    word_visits[w] = word_visits.get(w, 0.0) + voice_alpha * m
+
+    pattern_word_ids, pattern_sentence_ids, secondary_word_ids, secondary_sentence_ids = detect_pattern(
+        word_visits, sentence_visits, top_k=top_k, num_groups=2
+    )
+    epistemic_ratio = float(config.get("epistemic_secondary_mass_ratio", 0.35))
+    primary_mass = sum(sentence_visits.get(sid, 0) for sid in pattern_sentence_ids)
+    secondary_mass = sum(sentence_visits.get(sid, 0) for sid in secondary_sentence_ids)
+
+    if not pattern_sentence_ids:
+        verdict = "silent"
+        support_sentences = []
+        contradict_sentences = []
+        sides = []
+    else:
+        texts_primary, mass_primary = _format_side(
+            pattern_sentence_ids, sentence_visits, encoded_index, max_sentences=10
+        )
+        texts_secondary, mass_secondary = _format_side(
+            secondary_sentence_ids, sentence_visits, encoded_index, max_sentences=10
+        )
+        sides = [
+            {"sentence_ids": list(pattern_sentence_ids), "texts": texts_primary, "total_mass": mass_primary},
+            {"sentence_ids": list(secondary_sentence_ids), "texts": texts_secondary, "total_mass": mass_secondary},
+        ]
+        support_sentences = texts_primary
+        if primary_mass > 0 and secondary_mass / primary_mass >= epistemic_ratio:
+            verdict = "divided"
+            contradict_sentences = texts_secondary
+        else:
+            verdict = "supported"
+            contradict_sentences = []
+
+    confidence = 0.0
+    if word_visits:
+        p_norm = {w: v / sum(word_visits.values()) for w, v in word_visits.items()}
+        h = entropy_of_distribution(p_norm)
+        confidence = 1.0 / (1.0 + h) if (1.0 + h) != 0 else 0.0
+
+    evidence_dict: dict[str, Any] = {
+        "verdict": verdict,
+        "support_sentences": support_sentences,
+        "contradict_sentences": contradict_sentences,
+        "sides": sides,
+        "confidence": confidence,
+    }
+    run_extras: dict[str, Any] = {
+        "word_visits": dict(word_visits),
+        "sentence_visits": dict(sentence_visits),
+    }
+    return (evidence_dict, run_extras)
+
+
 def run(
     query: str,
     engine: Any,

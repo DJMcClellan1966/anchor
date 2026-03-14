@@ -7,6 +7,8 @@ from .critic import dictionary_score, score_and_decide
 from .retrieval import get_concept_bundle, get_style_sentences
 from .generator import generate
 from .wire import get_engine, get_config, get_generator_kind
+from .evidence_engine import EvidenceResult, evaluate
+from .agent import AgentReport, run_task
 
 __all__ = [
     "AnchorEngine",
@@ -18,4 +20,8 @@ __all__ = [
     "get_engine",
     "get_config",
     "get_generator_kind",
+    "EvidenceResult",
+    "evaluate",
+    "AgentReport",
+    "run_task",
 ]
