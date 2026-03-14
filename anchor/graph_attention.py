@@ -474,6 +474,27 @@ def traverse_loops(
     )
 
 
+def _format_side(
+    sentence_ids: list[int],
+    sentence_visits: dict[int, float],
+    encoded_index: dict[int, dict[str, Any]],
+    max_sentences: int = 10,
+) -> tuple[list[str], float]:
+    """Format one side for epistemic response: (list of sentence texts, total_mass)."""
+    total_mass = sum(sentence_visits.get(sid, 0) for sid in sentence_ids)
+    sorted_ids = sorted(
+        sentence_ids,
+        key=lambda sid: -sentence_visits.get(sid, 0),
+    )[:max_sentences]
+    texts: list[str] = []
+    for sid in sorted_ids:
+        rec = encoded_index.get(sid) or {}
+        t = rec.get("text")
+        if isinstance(t, str) and t.strip():
+            texts.append(t.strip()[:500])
+    return texts, total_mass
+
+
 def detect_pattern(
     word_visits: dict[int, float],
     sentence_visits: dict[int, float],
@@ -1076,14 +1097,58 @@ def run(
                 for w, m in pi_norm.items():
                     word_visits[w] = word_visits.get(w, 0.0) + voice_alpha * m
 
+    use_epistemic_refusal = config.get("use_epistemic_refusal", False)
+    num_groups_epistemic = max(2, path_groups) if use_epistemic_refusal else path_groups
     pattern_word_ids, pattern_sentence_ids, secondary_word_ids, secondary_sentence_ids = detect_pattern(
-        word_visits, sentence_visits, top_k=top_k, num_groups=path_groups
+        word_visits, sentence_visits, top_k=top_k, num_groups=num_groups_epistemic
     )
     next_span_ids: list[int] = []
     if next_span and pattern_sentence_ids:
         next_span_ids = _next_span_sentence_ids(
             pattern_sentence_ids, graph, genre_id, encoded_index, top_k_per_sentence=3
         )
+
+    use_epistemic_refusal = config.get("use_epistemic_refusal", False)
+    epistemic_ratio = float(config.get("epistemic_secondary_mass_ratio", 0.35))
+    if use_epistemic_refusal and secondary_sentence_ids:
+        primary_mass = sum(sentence_visits.get(sid, 0) for sid in pattern_sentence_ids)
+        secondary_mass = sum(sentence_visits.get(sid, 0) for sid in secondary_sentence_ids)
+        if primary_mass > 0 and secondary_mass / primary_mass >= epistemic_ratio:
+            texts_a, mass_a = _format_side(
+                pattern_sentence_ids, sentence_visits, encoded_index, max_sentences=10
+            )
+            texts_b, mass_b = _format_side(
+                secondary_sentence_ids, sentence_visits, encoded_index, max_sentences=10
+            )
+            response_text = (
+                "The corpus is divided on this.\n\nSide A (primary):\n"
+                + "\n".join(texts_a)
+                + "\n\nSide B (secondary):\n"
+                + "\n".join(texts_b)
+            )
+            run_extras_early: dict[str, Any] = {}
+            if config.get("voice_in_extras", True) and config.get("use_voice_of_corpus", False) and pi:
+                voice_top_k_extras = int(config.get("voice_top_k", 20))
+                sorted_pi_extras = sorted(pi.items(), key=lambda x: -x[1])
+                if voice_top_k_extras > 0:
+                    sorted_pi_extras = sorted_pi_extras[:voice_top_k_extras]
+                run_extras_early["voice_central_terms"] = [
+                    id_to_word.get(w, "") for w, _ in sorted_pi_extras if id_to_word.get(w)
+                ]
+            run_extras_early["epistemic_conflict"] = True
+            run_extras_early["epistemic_sides"] = [
+                {"sentence_ids": list(pattern_sentence_ids), "texts": texts_a, "total_mass": mass_a},
+                {"sentence_ids": list(secondary_sentence_ids), "texts": texts_b, "total_mass": mass_b},
+            ]
+            if config.get("use_entropy_confidence", False) and word_visits:
+                p_norm = normalize_visit_dict(word_visits)
+                h = entropy_of_distribution(p_norm)
+                run_extras_early["output_entropy"] = h
+                run_extras_early["confidence"] = 1.0 / (1.0 + h)
+            if config.get("use_attention_in_extras", False):
+                run_extras_early["word_visits"] = dict(word_visits)
+                run_extras_early["sentence_visits"] = dict(sentence_visits)
+            return (response_text, run_extras_early)
 
     output_format = config.get("attention_loop_output_format", "list")
     paragraph_max_chars = int(config.get("attention_loop_paragraph_max_chars", 500))

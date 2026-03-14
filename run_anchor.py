@@ -75,12 +75,26 @@ def _print_result(
         print(f"Generator: graph_attention (graph: {g_sentences} sentences, vocab: {g_vocab})")
     else:
         print(f"Generator: {generator_kind}")
+    if gen_meta.get("epistemic_conflict"):
+        print("[Anchor] Corpus is divided; showing both sides.")
+        if verbose:
+            sides = gen_meta.get("epistemic_sides") or []
+            if len(sides) >= 2:
+                a, b = sides[0], sides[1]
+                n_a = len(a.get("texts") or [])
+                n_b = len(b.get("texts") or [])
+                m_a = a.get("total_mass", 0)
+                m_b = b.get("total_mass", 0)
+                print(f"  Side A: {n_a} sentences, mass {m_a:.4f}; Side B: {n_b} sentences, mass {m_b:.4f}")
     if verbose and concept_bundle is not None:
         terms = concept_bundle.get("terms") or []
         print("---")
         print(f"Concepts: {', '.join(terms[:12])}{'...' if len(terms) > 12 else ''}")
         if style_count is not None:
             print(f"Style sentences: {style_count}")
+        voice_terms = gen_meta.get("voice_central_terms")
+        if voice_terms:
+            print(f"Voice of corpus (central terms): {', '.join(voice_terms[:15])}{'...' if len(voice_terms) > 15 else ''}")
         print("---")
     print("Response:")
     print(response.strip() or "(no text)")
@@ -173,6 +187,8 @@ def main() -> None:
             print(f"Generator: graph_attention (graph: {g_sentences} sentences, vocab: {g_vocab})")
         else:
             print(f"Generator: {generator_kind}")
+        if gen_meta.get("epistemic_conflict"):
+            print("[Anchor] Corpus is divided; showing both sides.")
         if args.verbose and extras:
             terms = (extras.get("concept_bundle") or {}).get("terms") or []
             print("---")

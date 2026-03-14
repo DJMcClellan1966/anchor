@@ -68,8 +68,10 @@
   "use_critic_loop": false,
   "critic_loop_max_iters": 2,
   "critic_loop_boost": 0.5,
-  "use_voice_of_corpus": false,
+  "use_voice_of_corpus": true,
   "voice_top_k": 20,
   "voice_alpha": 0.2,
-  "voice_in_extras": true
+  "voice_in_extras": true,
+  "use_epistemic_refusal": false,
+  "epistemic_secondary_mass_ratio": 0.35
 }

@@ -1027,6 +1027,124 @@ class TestRunVoiceExtras:
         assert run_extras["confidence"] > 0
 
 
+class TestEpistemicEngine:
+    """Epistemic refusal: when corpus is divided, return both sides instead of single answer."""
+
+    def test_epistemic_refusal_false_no_epistemic_conflict_in_extras(self, tmp_path: Path):
+        """With use_epistemic_refusal false, run_extras does not set epistemic_conflict."""
+        corpus = tmp_path / "corpus"
+        corpus.mkdir(exist_ok=True)
+        with open(corpus / "vocab.json", "w", encoding="utf-8") as f:
+            json.dump({"word_to_id": {"a": 0, "b": 1}, "id_to_word": {"0": "a", "1": "b"}}, f)
+        with open(corpus / "encoded_sentences.jsonl", "w", encoding="utf-8") as f:
+            f.write(json.dumps({"sentence_id": 0, "genre_id": "general", "text": "A b.", "token_ids": [0, 1]}) + "\n")
+        with open(corpus / "graph.json", "w", encoding="utf-8") as f:
+            json.dump({
+                "sentence_words": {"0": [0, 1]},
+                "word_cooccurrence": {"0": [1], "1": [0]},
+                "word_next": {"0": {"1": 1}},
+                "sentence_similar": {"0": []},
+            }, f)
+        class MockEngine:
+            @staticmethod
+            def get_context_for_description(q):
+                return {"concepts": [], "definitions": {}}
+        config = {
+            "default_genre_id": "general",
+            "attention_loop_hops": 2,
+            "attention_loop_top_k": 5,
+            "use_epistemic_refusal": False,
+        }
+        result = graph_attention.run("a", MockEngine(), config, tmp_path)
+        assert result is not None
+        _, run_extras = result
+        assert run_extras.get("epistemic_conflict") is not True
+
+    def test_epistemic_conflict_returns_divided_and_sides(self, tmp_path: Path):
+        """When use_epistemic_refusal true and secondary mass ratio >= threshold, return epistemic_conflict and two sides."""
+        corpus = tmp_path / "corpus"
+        corpus.mkdir(exist_ok=True)
+        with open(corpus / "vocab.json", "w", encoding="utf-8") as f:
+            json.dump(
+                {"word_to_id": {"w0": 0, "w1": 1, "w2": 2, "w3": 3},
+                 "id_to_word": {"0": "w0", "1": "w1", "2": "w2", "3": "w3"}},
+                f,
+            )
+        with open(corpus / "encoded_sentences.jsonl", "w", encoding="utf-8") as f:
+            for i in range(4):
+                f.write(json.dumps({
+                    "sentence_id": i, "genre_id": "general",
+                    "text": f"Sentence {i}.", "token_ids": [i]
+                }) + "\n")
+        graph = {
+            "sentence_words": {"0": [0], "1": [1], "2": [2], "3": [3]},
+            "word_cooccurrence": {"0": [1], "1": [0], "2": [3], "3": [2]},
+            "word_next": {"0": {"1": 1}, "1": {"0": 1}, "2": {"3": 1}, "3": {"2": 1}},
+            "sentence_similar": {"0": [], "1": [], "2": [], "3": []},
+        }
+        with open(corpus / "graph.json", "w", encoding="utf-8") as f:
+            json.dump(graph, f)
+        class MockEngine:
+            @staticmethod
+            def get_context_for_description(q):
+                return {"concepts": [], "definitions": {}}
+        config = {
+            "default_genre_id": "general",
+            "use_query_token_ids": True,
+            "attention_loop_hops": 3,
+            "attention_loop_top_k": 2,
+            "attention_loop_path_groups": 2,
+            "use_epistemic_refusal": True,
+            "epistemic_secondary_mass_ratio": 0.35,
+        }
+        result = graph_attention.run("w0 w2", MockEngine(), config, tmp_path)
+        assert result is not None
+        response_text, run_extras = result
+        if run_extras.get("epistemic_conflict"):
+            assert run_extras["epistemic_conflict"] is True
+            assert "epistemic_sides" in run_extras
+            assert len(run_extras["epistemic_sides"]) == 2
+            for side in run_extras["epistemic_sides"]:
+                assert "sentence_ids" in side
+                assert "texts" in side
+                assert "total_mass" in side
+            assert "divided" in response_text
+            assert "Side A" in response_text
+            assert "Side B" in response_text
+
+    def test_epistemic_no_conflict_when_ratio_below_threshold(self, tmp_path: Path):
+        """When epistemic_secondary_mass_ratio is very high, single answer path is used."""
+        corpus = tmp_path / "corpus"
+        corpus.mkdir(exist_ok=True)
+        with open(corpus / "vocab.json", "w", encoding="utf-8") as f:
+            json.dump({"word_to_id": {"a": 0, "b": 1}, "id_to_word": {"0": "a", "1": "b"}}, f)
+        with open(corpus / "encoded_sentences.jsonl", "w", encoding="utf-8") as f:
+            f.write(json.dumps({"sentence_id": 0, "genre_id": "general", "text": "A b.", "token_ids": [0, 1]}) + "\n")
+        with open(corpus / "graph.json", "w", encoding="utf-8") as f:
+            json.dump({
+                "sentence_words": {"0": [0, 1]},
+                "word_cooccurrence": {"0": [1], "1": [0]},
+                "word_next": {"0": {"1": 1}},
+                "sentence_similar": {"0": []},
+            }, f)
+        class MockEngine:
+            @staticmethod
+            def get_context_for_description(q):
+                return {"concepts": [], "definitions": {}}
+        config = {
+            "default_genre_id": "general",
+            "attention_loop_hops": 2,
+            "attention_loop_top_k": 5,
+            "use_epistemic_refusal": True,
+            "epistemic_secondary_mass_ratio": 0.99,
+        }
+        result = graph_attention.run("a", MockEngine(), config, tmp_path)
+        assert result is not None
+        out, run_extras = result
+        assert out.strip()
+        assert run_extras.get("epistemic_conflict") is not True
+
+
 class TestProtocols:
     def test_corpus_graph_satisfies_graph_like(self):
         """CorpusGraph implements the GraphLike protocol."""
